@@ -2,7 +2,7 @@
 @file:Import("cf.wayzer.scriptAgent.*", defaultImport = true)
 @file:Import("com.google.code.gson:gson:2.9.0", mavenDepends = true)
 
-package scripts
+package core
 
 name = "Core Library"
 

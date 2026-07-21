@@ -17,6 +17,11 @@
         <postStartupActivity implementation="cf.wayzer.scriptagent.ideaplugin.ScriptAgentStartup"/>
         <toolWindow id="SA Scripts" anchor="bottom" secondary="true"
                     factoryClass="cf.wayzer.scriptagent.ideaplugin.toolwindow.ScriptIndexToolWindow"/>
+
+        <psi.referenceContributor language="kotlin"
+                implementation="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptDependsReferenceContributor"/>
+        <annotator language="kotlin"
+                implementationClass="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptAnnotationAnnotator"/>
     </extensions>
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>

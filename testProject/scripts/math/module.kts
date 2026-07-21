@@ -3,7 +3,7 @@
 //@file:Import("cf.wayzer.scriptAgent.util.ScriptSave", defaultImport = true)
 @file:Import("kotlin.concurrent.atomics.ExperimentalAtomicApi", defaultImport = true)
 
-package scripts.math
+package math
 
 
 fun add(a: Int, b: Int) = a + b

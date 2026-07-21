@@ -6,6 +6,9 @@ import cf.wayzer.scriptAgent.define.ScriptSource
 import cf.wayzer.scriptAgent.impl.SACompiledScript
 import cf.wayzer.scriptAgent.impl.config.IDEMode
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -20,17 +23,17 @@ class ScriptAgentStartup : ProjectActivity {
         IDEMode.ideMetadataSource = ::findMetadata
     }
 
-    private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? {
+    private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {
         val project = LocalFileSystem.getInstance().findFileByIoFile(root)?.let { vRoot ->
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 !project.isDisposed && ProjectFileIndex.getInstance(project).isInContent(vRoot)
             }
-        } ?: return null
+        } ?: return@runReadActionBlocking null
 
         val entry = SAIndexerService.findScript(project, info.id)?.let {
             SAIndexerService.getInfo(project, it)
-        } ?: return null
-        return SACompiledScript(ScriptSource.Dummy(info)).apply {
+        } ?: return@runReadActionBlocking null
+        SACompiledScript(ScriptSource.Dummy(info)).apply {
             dependsData = entry.depends.toSet()
             importData = entry.imports.toSet()
         }

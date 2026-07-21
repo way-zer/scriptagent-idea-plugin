@@ -13,7 +13,7 @@ name = "Application Entry"
 fun runApp(): String {
     val result = calculate(UserData("App", 100L), 5, 3)
     // ↓ 应能调用 math/calc 中定义的 calculate
-    // ↓ UserData 应能解析自 core.kts
+    // ↓ UserData 应能解析自 module.kts
     return "App result: $result"
 }
 

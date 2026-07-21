@@ -780,12 +780,13 @@ IntelliJ 类型解析引擎综合两个通道的信息解析 maps.kts 中的类�
 
 ### Phase 2：导航与检查（里程碑 2）
 
-| 组件 | Extension Point |
-|------|----------------|
-| `ScriptDependsReferenceContributor` | `com.intellij.psi.referenceContributor` |
-| `ScriptIdCompletionContributor` | `com.intellij.completion.contributor` |
-| `ScriptAnnotationAnnotator` | `com.intellij.annotator` |
-| `ImportTypeQuickFix` | `com.intellij.codeInsight.intention` |
+| 组件 | Extension Point | 状态 |
+|------|----------------|------|
+| `ScriptDependsReferenceContributor` | `com.intellij.psi.referenceContributor` | ✅ 已实现（含 Ctrl+Click + 补全） |
+| ~~`ScriptIdCompletionContributor`~~ | ~~`com.intellij.completion.contributor`~~ | 不需要（由 Reference.getVariants 提供） |
+| `ScriptAnnotationAnnotator` | `com.intellij.annotator` | ✅ 已实现（@Depends 校验 + @Import 标签检查） |
+| `ImportTypeQuickFix` | `com.intellij.codeInsight.intention` | 待实现（低优先级） |
+| ~~`.metadata` 语法高亮~~ | — | 不需要（.metadata 已弃用） |
 
 ### Phase 3（待定）：注入属性合成 Stub（里程碑 3）
 

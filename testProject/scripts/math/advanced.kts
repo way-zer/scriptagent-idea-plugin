@@ -1,4 +1,4 @@
-package scripts.math
+package math
 
 name = "高级计算"
 
