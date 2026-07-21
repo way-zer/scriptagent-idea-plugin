@@ -15,10 +15,11 @@ repositories {
 }
 
 dependencies {
-    intellijPlatform{
+    intellijPlatform {
 //        intellijIdea("2025.3.1")
         local("C:\\Users\\q1048\\AppData\\Local\\Programs\\IntelliJ IDEA Ultimate")
         bundledPlugin("org.jetbrains.kotlin")
+        bundledPlugin("com.intellij.java")
         bundledModule("intellij.kotlin.analysis.platform")
     }
     implementation(rootProject).apply {
@@ -27,7 +28,9 @@ dependencies {
         exclude(group = "org.jetbrains.kotlinx")
     }
 }
-kotlin { jvmToolchain(21) }
+kotlin {
+    jvmToolchain(25)
+}
 intellijPlatform {
     pluginConfiguration {
         name.set("ScriptAgent")
