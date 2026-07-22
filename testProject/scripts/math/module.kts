@@ -6,7 +6,9 @@
 package math
 
 
+@Export
 fun add(a: Int, b: Int) = a + b
+@Export
 fun multiply(a: Int, b: Int) = a * b
 
 
@@ -18,5 +20,4 @@ Services.toString()
 
 @ExperimentalAtomicApi
 fun test(){
-
 }

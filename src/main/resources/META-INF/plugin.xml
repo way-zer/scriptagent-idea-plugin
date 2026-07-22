@@ -22,6 +22,8 @@
                 implementation="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptDependsReferenceContributor"/>
         <annotator language="kotlin"
                 implementationClass="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptAnnotationAnnotator"/>
+        <codeInsight.lineMarkerProvider language="kotlin"
+                implementationClass="cf.wayzer.scriptagent.ideaplugin.navigation.ExportLineMarkerProvider"/>
     </extensions>
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>
@@ -29,5 +31,6 @@
         <scriptAdditionalIdeaDependenciesProvider
                 implementation="cf.wayzer.scriptagent.ideaplugin.SAScriptDependenciesProvider"/>
         <fir.extensions.firExtensionRegistrar implementation="cf.wayzer.scriptAgent.impl.loader.kcp.MyFirRegistrar"/>
+        <kaResolveExtensionProvider implementation="cf.wayzer.scriptagent.ideaplugin.stub.SAResolveExtensionProvider"/>
     </extensions>
 </idea-plugin>

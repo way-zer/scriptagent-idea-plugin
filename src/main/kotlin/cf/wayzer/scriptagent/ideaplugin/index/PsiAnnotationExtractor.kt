@@ -28,7 +28,7 @@ object PsiAnnotationExtractor {
         return Triple(depends, imports, implements)
     }
 
-    private fun extractDepends(entry: KtAnnotationEntry): DependsData? {
+    fun extractDepends(entry: KtAnnotationEntry): DependsData? {
         val args = entry.valueArguments
         val name = args.firstOrNull { it.getArgumentName()?.asName?.asString().let { n -> n == null || n == "name" } }
             ?.getArgumentExpression()?.text?.removeSurrounding("\"") ?: return null
