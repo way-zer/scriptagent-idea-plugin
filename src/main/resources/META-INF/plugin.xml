@@ -24,6 +24,8 @@
                 implementationClass="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptAnnotationAnnotator"/>
         <codeInsight.lineMarkerProvider language="kotlin"
                 implementationClass="cf.wayzer.scriptagent.ideaplugin.navigation.ExportLineMarkerProvider"/>
+        <codeInsight.lineMarkerProvider language="kotlin"
+                implementationClass="cf.wayzer.scriptagent.ideaplugin.stub.StubRefreshLineMarkerProvider"/>
     </extensions>
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>

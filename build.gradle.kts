@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
 plugins {
     id("org.jetbrains.kotlin.jvm")
     id("org.jetbrains.intellij.platform") version "2.16.0"
@@ -38,4 +40,8 @@ intellijPlatform {
             sinceBuild.set("253.0") // 调整为更通用的版本，如 2024.1
         }
     }
+}
+val compileKotlin: KotlinCompile by tasks
+compileKotlin.compilerOptions {
+    freeCompilerArgs.set(listOf("-XXLanguage:+ContextParameters"))
 }

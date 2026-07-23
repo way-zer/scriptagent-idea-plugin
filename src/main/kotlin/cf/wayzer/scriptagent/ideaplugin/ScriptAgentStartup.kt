@@ -13,6 +13,7 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.vfs.LocalFileSystem
+import org.jetbrains.kotlin.name.NameUtils
 import java.io.File
 
 @OptIn(SAIDEModeApi::class)
@@ -34,16 +35,15 @@ class ScriptAgentStartup : ProjectActivity {
         SACompiledScript(ScriptSource.Dummy(info)).apply {
             dependsData = entry.depends.toSet()
             importData = entry.imports.toSet()
-            fqName = deriveScriptFqName(info.id)
+            fqName = deriveScriptFqName(info.id).let { (pkg, name) -> "$pkg.$name" }
         }
     }
 
-    /**
-     * Derives the script class FQN from script ID.
-     * Script ID "wayzer/user/ban" -> class name "Ban"
-     */
-    private fun deriveScriptFqName(scriptId: String): String {
-        val fileName = scriptId.substringAfterLast(Config.idSeparator)
-        return fileName.replaceFirstChar { it.uppercaseChar() }
-    }
+}
+
+fun deriveScriptFqName(scriptId: String): Pair<String, String> {
+    val padded = "scripts/$scriptId"
+    val p = padded.substringBeforeLast(Config.idSeparator).replace(Config.idSeparator, '.')
+    val name = NameUtils.getScriptNameForFile(scriptId).identifier
+    return p to name
 }

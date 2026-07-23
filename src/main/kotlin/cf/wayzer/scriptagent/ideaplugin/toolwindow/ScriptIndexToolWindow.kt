@@ -1,7 +1,7 @@
 package cf.wayzer.scriptagent.ideaplugin.toolwindow
 
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
-import cf.wayzer.scriptagent.ideaplugin.stub.extractExportSignaturesFromPsi
+import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -9,7 +9,6 @@ import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.psi.PsiManager
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
@@ -61,16 +60,23 @@ private class ScriptIndexPanel(
             val vFile = editor?.file ?: return@readAction "No file open"
             if (vFile.extension != "kts") return@readAction "Not a .kts file: ${vFile.name}"
 
-            val psiFile = PsiManager.getInstance(project).findFile(vFile)
-                    as? org.jetbrains.kotlin.psi.KtFile
-                ?: return@readAction "Cannot resolve PSI for: ${vFile.name}"
+            // Find the script ID for the current file
+            val info = SAIndexerService.getInfo(project, vFile)
+                ?: return@readAction "Not indexed: ${vFile.name}"
+            val scriptId = info.id
 
-            val exports = extractExportSignaturesFromPsi(psiFile)
-            if (exports.isEmpty()) return@readAction "No @Export members found in: ${vFile.name}"
+            // Refresh the stub via Analysis API
+            val cacheService = StubCacheService.getInstance(project)
+            cacheService.refreshSync(scriptId)
+
+            val exports = cacheService.getCached(scriptId)
+            if (exports.isNullOrEmpty()) return@readAction "No @Export members found in: ${vFile.name}"
 
             val className = vFile.nameWithoutExtension.replaceFirstChar { it.uppercaseChar() }
             buildString {
-                appendLine("// Stub as seen by FIR (from PSI)")
+                appendLine("// Stub generated via Analysis API (FQN types)")
+                appendLine("// Script: $scriptId")
+                appendLine()
                 appendLine("abstract class $className {")
                 for (member in exports) {
                     appendLine("    $member")

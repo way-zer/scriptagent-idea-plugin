@@ -1,62 +1,64 @@
 package cf.wayzer.scriptagent.ideaplugin.stub
 
-import cf.wayzer.scriptAgent.Config
+import cf.wayzer.scriptagent.ideaplugin.deriveScriptFqName
 import cf.wayzer.scriptagent.ideaplugin.index.PsiAnnotationExtractor
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiManager
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.KaSpiExtensionPoint
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaModule
-import org.jetbrains.kotlin.analysis.api.resolve.extensions.*
+import org.jetbrains.kotlin.analysis.api.projectStructure.KaScriptModule
+import org.jetbrains.kotlin.analysis.api.resolve.extensions.KaResolveExtension
+import org.jetbrains.kotlin.analysis.api.resolve.extensions.KaResolveExtensionFile
+import org.jetbrains.kotlin.analysis.api.resolve.extensions.KaResolveExtensionNavigationTargetsProvider
+import org.jetbrains.kotlin.analysis.api.resolve.extensions.KaResolveExtensionProvider
+import org.jetbrains.kotlin.idea.core.util.toPsiFile
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
-import org.jetbrains.kotlin.psi.*
+import org.jetbrains.kotlin.psi.KtElement
+import org.jetbrains.kotlin.psi.KtFile
+import org.jetbrains.kotlin.psi.KtNamedFunction
+import org.jetbrains.kotlin.psi.KtProperty
+import org.jetbrains.kotlin.utils.mapToSetOrEmpty
 
 /**
  * Provides resolve extensions that generate stub classes for scripts with @Export members.
- * Reads directly from PSI (no index dependency for exports).
  */
 @OptIn(KaExperimentalApi::class, KaSpiExtensionPoint::class)
 class SAResolveExtensionProvider : KaResolveExtensionProvider() {
     override fun provideExtensionsFor(module: KaModule): List<KaResolveExtension> {
-        val scriptModule = module as? org.jetbrains.kotlin.analysis.api.projectStructure.KaScriptModule
-            ?: return emptyList()
-        val project = module.project ?: return emptyList()
-        val ktFile = scriptModule.file
+        if (module !is KaScriptModule) return emptyList()
+        val project = module.project
+        val ktFile = module.file
+        return listOf(SAResolveExtension(project, ktFile))
+    }
+}
 
+@OptIn(KaExperimentalApi::class, KaSpiExtensionPoint::class)
+private class SAResolveExtension(
+    private val project: Project,
+    private val ktFile: KtFile,
+) : KaResolveExtension() {
+    private val files by lazy {
         // Find inject dependencies from the current script's file annotations
-        val fileAnnotations = ktFile.fileAnnotationList?.annotationEntries ?: return emptyList()
+        val fileAnnotations = ktFile.fileAnnotationList?.annotationEntries ?: return@lazy emptyList()
         val injectDeps = fileAnnotations
             .filter { it.shortName?.asString() == "Depends" }
             .mapNotNull { PsiAnnotationExtractor.extractDepends(it) }
             .filter { it.inject.isNotEmpty() }
             .map { it.name }
 
-        if (injectDeps.isEmpty()) return emptyList()
-
-        // Generate stub files only for the inject dependencies
-        val stubFiles = injectDeps.mapNotNull { depId ->
-            val vFile = SAIndexerService.findScript(project, depId) ?: return@mapNotNull null
-            SAStubFile(project, depId, vFile)
+        injectDeps.map { depId ->
+            SAStubFile(project, depId)
         }
-        if (stubFiles.isEmpty()) return emptyList()
-        return listOf(SAResolveExtension(stubFiles))
     }
-}
 
-@OptIn(KaExperimentalApi::class, KaSpiExtensionPoint::class)
-private class SAResolveExtension(
-    private val stubFiles: List<SAStubFile>,
-) : KaResolveExtension() {
+    override fun getKtFiles(): List<KaResolveExtensionFile> = files
 
-    override fun getKtFiles(): List<KaResolveExtensionFile> = stubFiles
-
-    override fun getContainedPackages(): Set<FqName> {
-        return setOf(FqName.ROOT)
+    override fun getContainedPackages(): Set<FqName> = files.mapToSetOrEmpty {
+        it.getFilePackageName()
     }
 
     override fun dispose() {}
@@ -66,24 +68,28 @@ private class SAResolveExtension(
 internal class SAStubFile(
     private val project: Project,
     private val scriptId: String,
-    private val scriptVFile: VirtualFile,
 ) : KaResolveExtensionFile() {
+    val classFqName = deriveScriptFqName(scriptId)
+    val ktFile by lazy {
+        val vFile = SAIndexerService.findScript(project, scriptId) ?: return@lazy null
+        vFile.toPsiFile(project) as? KtFile ?: return@lazy null
+    }
+    val pkg = classFqName.first
+    val className = classFqName.second
 
-    private val className: String = scriptId.substringAfterLast(Config.idSeparator)
-        .replaceFirstChar { it.uppercaseChar() }
+    override fun getFileName(): String = ktFile?.virtualFile?.name ?: "_$className.kt"
 
-    override fun getFileName(): String = "__stub_$className.kt"
-
-    override fun getFilePackageName(): FqName = FqName.ROOT
+    override fun getFilePackageName(): FqName = FqName.fromSegments(pkg.split("."))
 
     override fun getTopLevelClassifierNames(): Set<Name> = setOf(Name.identifier(className))
 
     override fun getTopLevelCallableNames(): Set<Name> = emptySet()
 
     override fun buildFileText(): String {
-        val exports = extractExportSignatures()
-        if (exports.isEmpty()) return "" // empty file, no stub needed
+        val exports = StubCacheService.getInstance(project).getCached(scriptId)
+        if (exports.isNullOrEmpty()) return ""
         return buildString {
+            appendLine("package $pkg")
             appendLine("abstract class $className {")
             for (member in exports) {
                 appendLine("    $member")
@@ -93,78 +99,28 @@ internal class SAStubFile(
     }
 
     override fun createNavigationTargetsProvider(): KaResolveExtensionNavigationTargetsProvider {
-        return SANavigationTargetsProvider(project, scriptId)
-    }
-
-    private fun extractExportSignatures(): List<String> {
-        val psiFile = PsiManager.getInstance(project).findFile(scriptVFile) as? KtFile ?: return emptyList()
-        return extractExportSignaturesFromPsi(psiFile)
+        return SANavigationTargetsProvider(ktFile)
     }
 }
 
 @OptIn(KaExperimentalApi::class, KaSpiExtensionPoint::class)
 private class SANavigationTargetsProvider(
-    private val project: Project,
-    private val scriptId: String,
+    private val ktFile: KtFile?,
 ) : KaResolveExtensionNavigationTargetsProvider() {
-
     override fun KaSession.getNavigationTargets(element: KtElement): Collection<PsiElement> {
-        val vFile = SAIndexerService.findScript(project, scriptId) ?: return emptyList()
-        val psiFile = PsiManager.getInstance(project).findFile(vFile) as? KtFile ?: return emptyList()
-        val declarations = psiFile.script?.declarations ?: psiFile.declarations
+        if (ktFile == null) return emptyList()
+        val declarations = ktFile.script?.declarations ?: ktFile.declarations
 
-        val targetName = when (element) {
-            is KtNamedFunction -> element.name
-            is KtProperty -> element.name
-            is KtClass -> element.name
-            else -> null
-        }
-
-        if (targetName == null || targetName == className(scriptId)) {
-            return listOf(psiFile)
-        }
-
-        val target = declarations.firstOrNull { decl ->
-            when (decl) {
-                is KtNamedFunction -> decl.name == targetName
-                is KtProperty -> decl.name == targetName
-                else -> false
+        return when (element) {
+            is KtNamedFunction -> declarations.filter {
+                it is KtNamedFunction && it.name == element.name
             }
-        }
-        return listOfNotNull(target)
-    }
 
-    private fun className(scriptId: String): String =
-        scriptId.substringAfterLast(Config.idSeparator).replaceFirstChar { it.uppercaseChar() }
-}
-
-/**
- * Extract @Export-annotated member signatures from a KtFile's PSI.
- * Returns abstract member declaration strings suitable for stub class generation.
- * Requires explicit type declarations on @Export members.
- */
-fun extractExportSignaturesFromPsi(ktFile: KtFile): List<String> {
-    val declarations = ktFile.script?.declarations ?: ktFile.declarations
-    val results = mutableListOf<String>()
-
-    for (decl in declarations) {
-        if (!decl.annotationEntries.any { it.shortName?.asString() == "Export" }) continue
-        when (decl) {
-            is KtNamedFunction -> {
-                val name = decl.name ?: continue
-                val params = decl.valueParameters.joinToString(", ") { p ->
-                    "${p.name ?: "_"}: ${p.typeReference?.text ?: "Any?"}"
-                }
-                val returnType = decl.typeReference?.text ?: "Unit"
-                results.add("abstract fun $name($params): $returnType")
+            is KtProperty -> declarations.filter {
+                it is KtProperty && it.name == element.name
             }
-            is KtProperty -> {
-                val name = decl.name ?: continue
-                val type = decl.typeReference?.text ?: "Any?"
-                val keyword = if (decl.isVar) "var" else "val"
-                results.add("abstract $keyword $name: $type")
-            }
+
+            else -> listOf(ktFile)
         }
     }
-    return results
 }
