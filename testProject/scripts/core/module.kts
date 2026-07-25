@@ -1,18 +1,11 @@
-@file:Import("kotlinx.coroutines.*", defaultImport = true)
-@file:Import("cf.wayzer.scriptAgent.*", defaultImport = true)
-@file:Import("com.google.code.gson:gson:2.9.0", mavenDepends = true)
+@file:Import("core.lib.*", defaultImport = true)
 
 package core
 
-name = "Core Library"
+// 基础模块：提供 @Export 成员和 defaultImport
 
-data class UserData(
-    val name: String,
-    val id: Long,
-)
+@Export
+fun greet(name: String): String = "Hello, $name!"
 
-fun greet(user: UserData): String = "Hello, ${user.name}!"
-
-onEnable {
-    logger.info("Core loaded")
-}
+@Export
+val version: String = "1.0.0"

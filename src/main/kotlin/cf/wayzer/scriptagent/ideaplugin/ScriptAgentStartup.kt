@@ -22,7 +22,17 @@ class ScriptAgentStartup : ProjectActivity {
         IDEMode.ideMetadataSource = ::findMetadata
     }
 
+    @Volatile
+    private var configInitialized = false
+
     private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {
+        // Initialize Config paths based on the scripts root directory
+        if (!configInitialized) {
+            configInitialized = true
+            Config.rootDir = root
+            Config.libraryDir = root.resolve("libs").toPath()
+        }
+
         val project = LocalFileSystem.getInstance().findFileByIoFile(root)?.let { vRoot ->
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 !project.isDisposed && ProjectFileIndex.getInstance(project).isInContent(vRoot)

@@ -13,3 +13,5 @@ IDE插件功能：
 - 能够正确配置companionSources的kt模块情况，确保功能和运行时行为对齐。
 
 IDE中，Stub的类名为 scripts.math.TestUtil 形式，对应math/testUtil脚本，Stub的内容kts中标注@Export的成员声明。
+
+testProject中为本插件的测试项目，包含一个极简的SA项目，但是可以用于测试IDE插件的各项功能。

@@ -232,9 +232,13 @@ Value: ScriptIndexInfo
 - 自动刷新/失效机制：未实现（当前需手动触发）
 - inject 参数值补全：未实现
 
-### Phase 4：Maven 依赖解析 — 待实现
+### Phase 4：Maven 依赖解析 — ✅ 已完成
 
-- Maven JAR 异步下载与 ScriptConfiguration 刷新
+- DependencyManager.getCachedFiles()：cache-only 模式
+- IDEMode.resolveCachedLibraries()：递归收集已下载 JAR 加入 classpath
+- MavenLibraryService：异步下载所有索引脚本的 Maven 依赖
+- ToolWindow "Download Maven Deps" 按钮
+- ScriptAgentStartup 初始化 Config.rootDir/libraryDir
 
 ### Phase 5：companionSources kt 模块支持 — 待实现
 
@@ -248,23 +252,18 @@ Value: ScriptIndexInfo
 
 ## 九、待实现功能设计
 
-### 9.1 Maven 依赖解析（Phase 4）
-
-**问题**：`@file:Import("group:artifact:version", mavenDepends=true)` 在运行时由 `ManagerImpl.importToLibraries` 通过 `DependencyManager` 下载 JAR 并注入 classpath。但 IDE 模式下 `IDEMode.refineForDepsIDEMode` 不处理 Maven 依赖——当前这些 JAR 不会出现在 ScriptConfiguration 的 classpath 中，导致 IDE 标红。
-
-**约束**：ScriptConfiguration 的 `beforeCompiling` 回调不能阻塞下载（会卡死 IDE）。
+### 9.1 Maven 依赖解析（Phase 4）— ✅ 已实现
 
 **方案**：
-- 提供按钮（ToolWindow 或 gutter action）触发异步 Maven 依赖下载
-- 下载完成后，将 JAR 路径持久化到本地缓存（按脚本 ID + 依赖坐标索引）
-- 触发 ScriptConfiguration refresh（通过 `ScriptConfigurationManager.updateScriptDependenciesIfNeeded` 或类似 API），使 `beforeCompiling` 再次执行时能从缓存读取已下载的 JAR 路径并 `updateClasspath`
-- 需要在 `ideMetadataSource` hook 返回的 `SACompiledScript` 中填充 `libraries` 字段，或在 IDEMode 中增加 library 解析路径
+- `DependencyManager.DependencyBuilder.getCachedFiles()`：cache-only 模式，只返回本地已存在的 JAR，不触发网络
+- `IDEMode.resolveCachedLibraries()`：递归遍历依赖链，用 cache-only 收集已下载 JAR → `addClassPath`
+- `MavenLibraryService`：Project-level service，异步调用 `DependencyManager` 下载所有索引脚本的 Maven 依赖
+- ToolWindow "Download Maven Deps" 按钮触发下载
+- JAR 缓存位置：scripts root 旁的 `libs/` 目录（与运行时共享）
+- `ScriptAgentStartup` 首次调用 `findMetadata` 时初始化 `Config.rootDir` 和 `Config.libraryDir`
 
-**TODO**：
-- [ ] 确定 Maven 下载结果的缓存位置和格式
-- [ ] 实现异步下载 Action/按钮
-- [ ] 在 IDEMode 或 ideMetadataSource 中集成已下载 JAR 的 classpath 注入
-- [ ] 触发 ScriptConfiguration refresh 的 API 调研
+**剩余 TODO**：
+- [ ] 触发 ScriptConfiguration refresh 的 API（下载后需要 IDE 重新分析脚本）
 
 ### 9.2 companionSources kt 模块支持（Phase 5）
 
@@ -290,7 +289,7 @@ Value: ScriptIndexInfo
 - [ ] 确保 companion .kt 能访问 Stubs 和 Maven libraries
 - [ ] 与 Maven 依赖解析（9.1）协调——companion .kt 的 classpath 依赖 Maven JAR 已下载
 
-## 十、已知限制
+## 十、已知限制与 TODO
 
 1. **Stub 缓存无自动失效**：目标脚本的 @Export 成员变更后，需用户手动点击 gutter icon 刷新。可通过监听 FileBasedIndex 变更事件实现自动刷新。
 
@@ -298,9 +297,11 @@ Value: ScriptIndexInfo
 
 3. **Import 类型推断启发式**：`PsiAnnotationExtractor.inferType` 在无显式标志时按字符串格式推断，需与框架运行时行为保持一致。
 
-4. **Maven 依赖 JAR 未注入 classpath**：当前 IDE 模式完全不处理 `mavenDepends` 类型的 @Import，导致依赖 Maven 库的脚本在 IDE 中标红。
+4. **companion .kt 文件无 IDE 支持**：脱离 Gradle 后这些文件将变成离散文件，IDE 无法为其提供正确的 classpath 和类型解析。
 
-5. **companion .kt 文件无 IDE 支持**：脱离 Gradle 后这些文件将变成离散文件，IDE 无法为其提供正确的 classpath 和类型解析。
+5. **slf4j 被错误加入 classpath**：IDE 插件当前把 IDEA 自带的 slf4j 意外暴露到脚本 classpath 中，需要排查 `IDEMode` 中 `classpathFromClassloader` 的过滤逻辑。
+
+6. **不存在的 @Depends 导致整个文件分析失败**（框架侧）：`IDEMode.refineForDepsIDEMode` 中 `findScriptMetadata` 找不到脚本时抛异常并 report FATAL，导致整个 ScriptConfiguration 失败，文件停止分析。应改为对单个不存在的依赖报 WARNING/ERROR 但继续处理其余依赖，不中断整体分析。
 
 ## 十一、与 Gradle 的关系
 
