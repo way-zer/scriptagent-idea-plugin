@@ -301,7 +301,10 @@ Value: ScriptIndexInfo
 
 5. **slf4j 被错误加入 classpath**：IDE 插件当前把 IDEA 自带的 slf4j 意外暴露到脚本 classpath 中，需要排查 `IDEMode` 中 `classpathFromClassloader` 的过滤逻辑。
 
-6. **不存在的 @Depends 导致整个文件分析失败**（框架侧）：`IDEMode.refineForDepsIDEMode` 中 `findScriptMetadata` 找不到脚本时抛异常并 report FATAL，导致整个 ScriptConfiguration 失败，文件停止分析。应改为对单个不存在的依赖报 WARNING/ERROR 但继续处理其余依赖，不中断整体分析。
+6. **不存在的 @Depends 导致整个文件分析失败**（上游限制）：`FirScriptConfiguratorExtensionImpl.configure` 中 `getOrLoadConfiguration` 的结果通过 `valueOr` 处理——`Failure` 会 `addErrorElement + return` 导致整个文件停止分析，而 `Success` 带的 diagnostics 会被完全忽略。因此无法通过 ScriptConfiguration 通道报告部分错误（如"依赖 X 未找到"）同时保持文件可用。当前 `ScriptAnnotationAnnotator` 已独立检查不存在的 `@Depends` 并报错，但 `refineForDepsIDEMode` 中 FATAL 仍会导致文件分析中断。可能的解决路径：
+   - 等待上游（Kotlin scripting 框架）支持 Success diagnostics 的展示
+   - 或自行注册 `FirScriptConfiguratorExtension`（`firstOrNull { accepts }` 机制允许替代默认实现），在其中正确处理 Failure/diagnostics
+   - 相关源码：`FirScriptConfigurationExtensionImpl.kt:88`、`k2RefinementUtil.kt`、`AbstractRawFirBuilder.kt:1417`
 
 ## 十一、与 Gradle 的关系
 

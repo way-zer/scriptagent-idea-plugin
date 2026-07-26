@@ -1,8 +1,8 @@
 @file:Depends("math", inject = "mathModule")
 @file:Depends("math/testUtil", inject = "util")
-@file:Depends("nonexistent/script")
+//@file:Depends("nonexistent/script")
 @file:Import("com.google.code.gson:gson:2.10.1", mavenDepends = true)
-@file:Import("bad", libraryByClass = true, mavenDepends = true)
+//@file:Import("bad", libraryByClass = true, mavenDepends = true)
 
 package math
 

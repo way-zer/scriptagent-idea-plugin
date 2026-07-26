@@ -30,7 +30,7 @@ class ScriptAgentStartup : ProjectActivity {
         if (!configInitialized) {
             configInitialized = true
             Config.rootDir = root
-            Config.libraryDir = root.resolve("libs").toPath()
+            Config.libraryDir = root.resolveSibling("libs").toPath()
         }
 
         val project = LocalFileSystem.getInstance().findFileByIoFile(root)?.let { vRoot ->

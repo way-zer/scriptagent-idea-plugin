@@ -1,7 +1,6 @@
 package cf.wayzer.scriptagent.ideaplugin.toolwindow
 
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
-import cf.wayzer.scriptagent.ideaplugin.maven.MavenLibraryService
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
@@ -48,26 +47,7 @@ private class ScriptIndexPanel(
             add(JButton("Show Stub (Current File)").apply {
                 addActionListener { cs.launch { showCurrentFileStub() } }
             })
-            add(JButton("Download Maven Deps").apply {
-                addActionListener {
-                    isEnabled = false
-                    text = "Downloading..."
-                    MavenLibraryService.getInstance(project).downloadAll { success, message ->
-                        cs.launch {
-                            withContext(Dispatchers.EDT) {
-                                isEnabled = true
-                                text = "Download Maven Deps"
-                                textArea.text = if (success) "✓ $message\n\nRefreshing ScriptConfiguration..."
-                                else "✗ $message"
-                            }
-                            if (success) {
-                                // TODO: trigger ScriptConfiguration refresh
-                                // ScriptClassRootsUpdater or similar API
-                            }
-                        }
-                    }
-                }
-            })
+
         }
         add(buttonPanel, BorderLayout.NORTH)
         add(JBScrollPane(textArea), BorderLayout.CENTER)

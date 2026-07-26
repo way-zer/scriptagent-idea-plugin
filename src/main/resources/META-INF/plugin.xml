@@ -11,12 +11,26 @@
     <depends>com.intellij.java</depends>
     <depends>org.jetbrains.kotlin</depends>
 
+    <actions>
+        <group id="ScriptAgent.DownloadDepsActionGroup">
+            <action id="ScriptAgent.DownloadDeps"
+                    class="cf.wayzer.scriptagent.ideaplugin.maven.DownloadDepsAction"/>
+        </group>
+    </actions>
+
     <extensions defaultExtensionNs="com.intellij">
         <fileBasedIndex implementation="cf.wayzer.scriptagent.ideaplugin.index.ScriptIndexer"/>
 
         <postStartupActivity implementation="cf.wayzer.scriptagent.ideaplugin.ScriptAgentStartup"/>
         <toolWindow id="SA Scripts" anchor="bottom" secondary="true"
                     factoryClass="cf.wayzer.scriptagent.ideaplugin.toolwindow.ScriptIndexToolWindow"/>
+
+        <editorFloatingToolbarProvider
+                id="ScriptAgent.DepsFloatingToolbarProvider"
+                order="after ExternalSystem.ProjectRefreshFloatingProvider"
+                implementation="cf.wayzer.scriptagent.ideaplugin.maven.DepsFloatingToolbarProvider"/>
+
+        <notificationGroup id="ScriptAgent" displayType="BALLOON"/>
 
         <psi.referenceContributor language="kotlin"
                 implementation="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptDependsReferenceContributor"/>

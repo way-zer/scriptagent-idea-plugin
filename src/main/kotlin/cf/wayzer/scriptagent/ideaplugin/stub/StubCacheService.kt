@@ -2,8 +2,7 @@ package cf.wayzer.scriptagent.ideaplugin.stub
 
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import com.intellij.openapi.application.readAction
-import com.intellij.openapi.components.Service
-import com.intellij.openapi.components.service
+import com.intellij.openapi.components.*
 import com.intellij.openapi.project.Project
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -19,20 +18,32 @@ import org.jetbrains.kotlin.psi.KtDeclaration
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtNamedFunction
 import org.jetbrains.kotlin.psi.KtProperty
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Caches stub signatures per script ID.
+ * Persisted via PersistentStateComponent (stored in .idea/).
  * Supports async refresh via Analysis API (must be called outside resolve context).
  */
 @Service(Service.Level.PROJECT)
+@State(name = "ScriptAgentStubCache", storages = [Storage("scriptAgentStubs.xml")])
 class StubCacheService(
     private val project: Project,
     private val scope: CoroutineScope,
-) {
-    private val cache = ConcurrentHashMap<String, List<String>>()
+) : PersistentStateComponent<StubCacheService.State> {
 
-    fun getCached(scriptId: String): List<String>? = cache[scriptId]
+    data class State(
+        var stubs: MutableMap<String, List<String>> = mutableMapOf()
+    )
+
+    private var state = State()
+
+    override fun getState(): State = state
+
+    override fun loadState(state: State) {
+        this.state = state
+    }
+
+    fun getCached(scriptId: String): List<String>? = state.stubs[scriptId]
 
     /**
      * Asynchronously refresh the stub for the given script ID using Analysis API.
@@ -42,7 +53,7 @@ class StubCacheService(
         scope.launch {
             val signatures = readAction { generateSignatures(scriptId) }
             if (signatures != null) {
-                cache[scriptId] = signatures
+                state.stubs[scriptId] = signatures
             }
         }
     }
@@ -54,7 +65,7 @@ class StubCacheService(
     fun refreshSync(scriptId: String) {
         val signatures = generateSignatures(scriptId)
         if (signatures != null) {
-            cache[scriptId] = signatures
+            state.stubs[scriptId] = signatures
         }
     }
 
@@ -87,11 +98,11 @@ class StubCacheService(
     }
 
     fun invalidate(scriptId: String) {
-        cache.remove(scriptId)
+        state.stubs.remove(scriptId)
     }
 
     fun invalidateAll() {
-        cache.clear()
+        state.stubs.clear()
     }
 
     companion object {
