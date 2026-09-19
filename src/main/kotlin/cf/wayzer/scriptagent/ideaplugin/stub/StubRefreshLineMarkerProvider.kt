@@ -1,12 +1,12 @@
 package cf.wayzer.scriptagent.ideaplugin.stub
 
+import cf.wayzer.scriptagent.ideaplugin.index.PsiAnnotationExtractor
 import com.intellij.codeInsight.daemon.GutterIconNavigationHandler
 import com.intellij.codeInsight.daemon.LineMarkerInfo
 import com.intellij.codeInsight.daemon.LineMarkerProvider
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.editor.markup.GutterIconRenderer
 import com.intellij.psi.PsiElement
-import org.jetbrains.kotlin.psi.KtAnnotationEntry
 
 /**
  * Shows a refresh gutter icon on @file:Depends(..., inject="xxx") lines.
@@ -17,26 +17,12 @@ class StubRefreshLineMarkerProvider : LineMarkerProvider {
     override fun getLineMarkerInfo(element: PsiElement) = createMarkerIfApplicable(element)
 
     private fun createMarkerIfApplicable(element: PsiElement): LineMarkerInfo<PsiElement>? {
-        val annotation = element as? KtAnnotationEntry ?: return null
+        val annotation = PsiAnnotationExtractor.asFileAnnotation(element) ?: return null
         if (annotation.shortName?.asString() != "Depends") return null
 
-        // Check it's a file-level annotation
-        val ktFile = annotation.containingKtFile
-        val fileAnnotations = ktFile.fileAnnotationList?.annotationEntries ?: return null
-        if (annotation !in fileAnnotations) return null
-
-        // Check it has inject parameter
-        val injectArg = annotation.valueArguments.find {
-            it.getArgumentName()?.asName?.asString() == "inject"
-        } ?: return null
-        val injectValue = injectArg.getArgumentExpression()?.text?.removeSurrounding("\"")
-        if (injectValue.isNullOrEmpty()) return null
-
-        // Extract dependency name
-        val nameArg = annotation.valueArguments.firstOrNull {
-            it.getArgumentName()?.asName?.asString().let { n -> n == null || n == "name" }
-        }
-        val depId = nameArg?.getArgumentExpression()?.text?.removeSurrounding("\"") ?: return null
+        val data = PsiAnnotationExtractor.extractDepends(annotation) ?: return null
+        if (data.inject.isEmpty()) return null
+        val depId = data.name
 
         val anchor = annotation.atSymbol ?: annotation.firstChild ?: return null
 

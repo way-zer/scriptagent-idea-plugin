@@ -101,7 +101,7 @@ private class ScriptIndexPanel(
             sb.appendLine()
 
             for (key in allKeys) {
-                val file = SAIndexerService.findScript(project, key)!!
+                val file = SAIndexerService.findScript(project, key) ?: continue
                 val info = SAIndexerService.getInfo(project, file)
                 if (info == null) {
                     sb.appendLine("[$key] ${file.path}")

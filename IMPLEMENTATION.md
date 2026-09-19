@@ -150,7 +150,9 @@ src/main/kotlin/cf/wayzer/scriptagent/ideaplugin/
 
 ### 4.6 Module 自动推断
 
-`SAIndexerService.getDepends()` 自动附加最近的 `module.kts` 依赖：通过 `Config.getModulesById` 获取路径层级中的所有 module 候选，取 `asReversed()` 后找第一个存在的作为隐式依赖。与运行时行为一致。
+`SAIndexerService.getDepends()` 自动附加最近的 `module.kts` 依赖：通过 `Config.getModulesById` 获取路径层级中的所有 module 候选，取 `asReversed()` 后找第一个存在的作为隐式依赖；同名时显式 `@Depends` 覆盖隐式 module 项（与运行时 `handleOnCollectingData` 一致）。
+
+`ScriptAgentStartup.findMetadata` 必须走 `getDepends()` 而不是 `ScriptIndexInfo.depends`，否则经 `ideMetadataSource` 解析出来的依赖脚本（`refineForDepsIDEMode` 的递归对象）会丢掉 module，导致继承不到 module 的 defaultImport/compileArg/Maven 依赖 —— 这正是 `.metadata` 路径（含 module）与插件路径不一致的点。module 在查询期解析而非索引期写入索引值：判断 module 脚本是否存在需要索引本身，索引期间不可重入。
 
 ## 五、Extension Points 注册
 
@@ -234,11 +236,10 @@ Value: ScriptIndexInfo
 
 ### Phase 4：Maven 依赖解析 — ✅ 已完成
 
-- DependencyManager.getCachedFiles()：cache-only 模式
-- IDEMode.resolveCachedLibraries()：递归收集已下载 JAR 加入 classpath
-- MavenLibraryService：异步下载所有索引脚本的 Maven 依赖
-- ToolWindow "Download Maven Deps" 按钮
-- ScriptAgentStartup 初始化 Config.rootDir/libraryDir
+- IDE classpath 收集：`IDEMode.refineForDepsIDEMode` 对每个依赖递归调用 `ManagerImpl.importToLibraries(script, offline = true)`，只把本地已存在的 JAR `addClassPath`（不联网）
+- `MavenLibraryService`：Project-level service，Sync 时下载该脚本及其传递（非 soft）依赖的 Maven 依赖
+- 入口：编辑器浮窗 "Sync Script Dependencies" 按钮（`DownloadDepsAction` + `DepsFloatingToolbarProvider`）
+- `ScriptAgentStartup.execute` 直接设置 `Config.libraryDir = <projectRoot>/libs`；`Config.rootDir` 故意不设，IDE 一旦用到会立刻抛错暴露依赖
 
 ### Phase 5：companionSources kt 模块支持 — 待实现
 
@@ -250,22 +251,122 @@ Value: ScriptIndexInfo
 - 脚本 ID 重命名级联
 - ScriptStructureView
 
-## 九、待实现功能设计
+### Phase 7：运行时 @Export Interface 生成 — 待实现
 
-### 9.1 Maven 依赖解析（Phase 4）— ✅ 已实现
+- `deriveScriptFqName` 移至框架 main 源集
+- KCP `ExportInterfaceIrExtension`：IR 阶段生成 interface + script class implements
+- `SAConfiguration` 中 `providedProperties` 类型改为 interface FQN
+- ABI hash 机制（metadata 字段 + cache 失效判断）
+- 热重载时级联重载 inject 消费方
+
+## 九、运行时 @Export Interface 方案设计
+
+### 9.0 概述
+
+IDE 和运行时的 inject 机制统一使用 interface 类型。脚本中 `@Export` 标注的成员会被提取为一个 interface，脚本类在编译时 implements 该 interface。消费方通过 `providedProperties` 拿到 interface 类型的引用。
+
+**FQN 约定**：`scripts.<module>.<ClassName>`（由 `deriveScriptFqName(scriptId)` 计算），IDE 和运行时共用同一算法。
+
+### 9.0.1 编译流程（产出方 A，有 @Export）
+
+```
+FIR 阶段: 正常编译，无特殊处理
+IR 阶段 (ScriptLoweringExtension 先执行): IrScript → IrClass(origin=SCRIPT_CLASS)
+IR 阶段 (ExportInterfaceIrExtension 后执行):
+  1. 找到 IrClass(origin=SCRIPT_CLASS)
+  2. 扫描 declarations 中标了 @Export 注解的函数/属性
+  3. 创建 IrClass(kind=INTERFACE, FQN=deriveScriptFqName(scriptId))
+     - 为每个 @Export 成员生成 abstract 签名
+  4. 创建 IrFile 容纳 interface，加入 moduleFragment.files
+  5. scriptClass.superTypes += interfaceType
+  6. 为匹配成员设置 overriddenSymbols → 指向 interface 的 abstract 方法
+  7. JVM 后端 codegen → 输出 interface .class + script .class（带 implements + bridge）
+  8. 一起写入 cache JAR
+```
+
+**关键**：
+- 注册顺序保证：scripting plugin 的 `ScriptLoweringExtension` 总是先于用户 KCP 执行（scripting isolated compilation path 中 `ScriptingK2CompilerPluginRegistrar` 显式先注册）
+- `overriddenSymbols` 的设置使 JVM 后端自动生成 bridge method（泛型擦除、协变返回等）
+- 不需要 `FirDeclarationGenerationExtension`（scripting 编译路径不调用 `createFilesWithGeneratedDeclarations`，FIR 生成的声明不会进入 IR/输出）
+
+### 9.0.2 编译流程（消费方 B）
+
+```
+A 的 JAR 已在 classpath → interface .class 直接可见（正常 classpath 解析）
+providedProperties: "propName" -> KotlinType("scripts.math.TestUtil")
+FIR 正常解析类型，无需额外 KCP 处理
+正常编译完成
+```
+
+### 9.0.3 运行时加载
+
+```
+ScriptClassLoader(A): 加载 A 的 JAR → 脚本 class implements interface ✓
+ScriptClassLoader(B): 引用 interface 类型 → 通过 parentClassloaders(A) 解析
+instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtual dispatch ✓
+```
+
+- `ManagerImpl.instantiate()` 逻辑不变：仍然传入 `Script` 实例，但构造函数参数类型为 interface，JVM 类型兼容
+
+### 9.0.4 ABI Hash 与缓存失效
+
+- **产出方**：编译完成后，根据 interface 成员签名（函数名+参数类型+返回类型，属性名+类型+mutability，排序后）计算 hash，存入 metadata `ABI_HASH` 字段
+- **消费方**：编译时记录所有 inject 依赖的 ABI hash（`DEPS_ABI: depName=hash`）
+- **缓存判断**：`isCacheUpdate` 增加检查——遍历 `DEPS_ABI`，与依赖当前 `ABI_HASH` 比对，不匹配则 cache 失效触发重编译
+- ABI hash 可整合到现有 `sourceMd5` 体系中
+
+### 9.0.5 热重载
+
+- A 重载但 @Export 签名没变（ABI hash 不变）→ B 不需要重编译，但 ClassLoader 重建使旧 interface Class 对象失效
+  - A 的 JAR 包含 interface .class，A 的 ClassLoader 重建后 interface 是新 Class 对象
+  - B 持有旧 interface 引用 → 需要 B 也重载
+  - **结论**：当 A 重载时，所有依赖 A（且有 inject）的脚本 B 也需要重载（但不需要重编译）
+- A 的 @Export 签名变了 → ABI hash 变 → B 需要重编译 + 重载
+
+### 9.0.6 IDE 侧对齐
+
+- IDE `SAResolveExtensionProvider` 生成的 stub FQN 已经是 `scripts.<module>.<ClassName>`，与运行时 interface FQN 一致
+- IDE `providedProperties` 类型也用同一 FQN（`IDEMode.beforeCompilingIDEMode` 中 `findScriptMetadata(it.name).fqName`）
+  - 需要确保 `fqName` 在 IDE metadata 中也使用 interface FQN（`deriveScriptFqName`）—— 当前已是如此（`ScriptAgentStartup.findMetadata` 设置 `fqName = deriveScriptFqName(...)`）
+- Stub 内容（成员签名）由 `StubCacheService` 提供，格式为 `abstract fun/val ...`，与运行时 interface 内容语义一致
+
+### 9.0.7 实现变更清单
+
+| 组件 | 变更 |
+|------|------|
+| `deriveScriptFqName` | 从 idePlugin 移至框架 `main` 源集（如 `Config` 或 `util`），KCP 和 IDE 共用 |
+| KCP `MyRegistrar` | 新增 `ExportInterfaceIrExtension`（`IrGenerationExtension`）|
+| `ExportInterfaceIrExtension` | IR 阶段生成 interface + 设置 script class implements + overriddenSymbols |
+| `SAConfiguration.handleCompile()` | `providedProperties` 类型从 `compiled.fqName`（脚本类 FQN）改为 `deriveScriptFqName(depId)` 得到的 interface FQN |
+| `ScriptCache` metadata | 新增 `ABI_HASH` 字段（产出方）、`DEPS_ABI` 字段（消费方）|
+| `ScriptCache.isCacheUpdate` | 增加 DEPS_ABI 比对逻辑 |
+| `ScriptManager` 热重载 | A 重载时级联重载有 inject 依赖的消费方 |
+| IDE 侧 | 无需改动（FQN 已对齐）|
+
+### 9.0.8 没有 @Export 成员的脚本
+
+如果脚本没有 @Export 成员：
+- 不生成 interface
+- 不允许对该脚本使用 inject（或 inject 类型 fallback 为 `Script` 基类）
+- 需要在编译时报错或警告
+
+---
+
+## 十、其他待实现功能设计
+
+### 10.1 Maven 依赖解析（Phase 4）— ✅ 已实现
 
 **方案**：
-- `DependencyManager.DependencyBuilder.getCachedFiles()`：cache-only 模式，只返回本地已存在的 JAR，不触发网络
-- `IDEMode.resolveCachedLibraries()`：递归遍历依赖链，用 cache-only 收集已下载 JAR → `addClassPath`
-- `MavenLibraryService`：Project-level service，异步调用 `DependencyManager` 下载所有索引脚本的 Maven 依赖
-- ToolWindow "Download Maven Deps" 按钮触发下载
-- JAR 缓存位置：scripts root 旁的 `libs/` 目录（与运行时共享）
-- `ScriptAgentStartup` 首次调用 `findMetadata` 时初始化 `Config.rootDir` 和 `Config.libraryDir`
+- IDE classpath 收集：`IDEMode.refineForDepsIDEMode` 对依赖递归调用 `ManagerImpl.importToLibraries(script, offline = true)`（走 `DependencyBuilder.offline`，cache-only，不联网），把已存在的 JAR `addClassPath`
+- `MavenLibraryService`：Project-level service，`DownloadDepsAction` 触发，下载该脚本及其传递（非 soft）依赖的 Maven 依赖
+- 入口：编辑器浮窗 "Sync Script Dependencies"（`DepsFloatingToolbarProvider`），不是 ToolWindow 按钮
+- JAR 缓存位置：`<projectRoot>/libs`（固定约定）。只有当运行时的 scripts 根就在 project root 下时，才与运行时共享同一缓存目录
+- `ScriptAgentStartup.execute`：固定 `Config.libraryDir = <projectRoot>/libs`（Maven 解析链 `DependencyManager`/`Dependency`/`MavenResolver` 的硬依赖），不做 scripts 根扫描。`Config.rootDir` 不初始化——IDE 分析不应依赖它，若某条路径意外访问，`lateinit` 抛错即可发现该依赖。`libraryDir` 在安装 `ideMetadataSource` hook **之前**设置，故分析被调用时必然已就绪。简化假设：`libs` 与 project root 同级（与 testProject 布局一致），scripts 根嵌套更深时不适用。
 
 **剩余 TODO**：
-- [ ] 触发 ScriptConfiguration refresh 的 API（下载后需要 IDE 重新分析脚本）
+- [x] 下载后触发 ScriptConfiguration 重新分析：`DownloadDepsAction` → `ReloadScriptConfigurationService.reloadScriptData`
 
-### 9.2 companionSources kt 模块支持（Phase 5）
+### 10.2 companionSources kt 模块支持（Phase 5）
 
 **问题**：运行时 `SAConfiguration.registerCompanionSource()` 将以下 `.kt` 文件作为 companion sources 与宿主脚本一起编译：
 - 同目录下 `<scriptBaseName>.<xxx>.kt` 格式的文件（如 `calc.helper.kt` 对应 `calc.kts`）
@@ -289,7 +390,7 @@ Value: ScriptIndexInfo
 - [ ] 确保 companion .kt 能访问 Stubs 和 Maven libraries
 - [ ] 与 Maven 依赖解析（9.1）协调——companion .kt 的 classpath 依赖 Maven JAR 已下载
 
-## 十、已知限制与 TODO
+## 十一、已知限制与 TODO
 
 1. **Stub 缓存无自动失效**：目标脚本的 @Export 成员变更后，需用户手动点击 gutter icon 刷新。可通过监听 FileBasedIndex 变更事件实现自动刷新。
 
@@ -306,7 +407,7 @@ Value: ScriptIndexInfo
    - 或自行注册 `FirScriptConfiguratorExtension`（`firstOrNull { accepts }` 机制允许替代默认实现），在其中正确处理 Failure/diagnostics
    - 相关源码：`FirScriptConfigurationExtensionImpl.kt:88`、`k2RefinementUtil.kt`、`AbstractRawFirBuilder.kt:1417`
 
-## 十一、与 Gradle 的关系
+## 十二、与 Gradle 的关系
 
 插件消除了对 `.metadata` 的依赖。IDE 依赖视图完全由注解驱动，不再需要 Gradle `implementation(project(...))` 源集依赖。
 

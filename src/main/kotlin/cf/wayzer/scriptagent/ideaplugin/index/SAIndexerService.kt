@@ -32,15 +32,20 @@ object SAIndexerService {
             .values.firstOrNull()
     }
 
+    /**
+     * Script dependencies including the implicitly inherited closest `module`, mirroring the runtime
+     * (`SAConfiguration.handleOnCollectingData`): every script auto-depends on its nearest existing
+     * module. An explicit `@Depends` with the same id wins over the implicit entry (same as runtime).
+     *
+     * Resolved at query time rather than stored in [ScriptIndexInfo]: knowing whether the module script
+     * exists requires the index itself, which must not be re-entered while indexing.
+     */
     fun getDepends(project: Project, file: VirtualFile): List<DependsData> {
         val info = getInfo(project, file) ?: return emptyList()
         val module = Config.getModulesById(info.id).asReversed().firstOrNull {
             findScript(project, it) != null
-        }
-        if (module != null) {
-            return info.depends + DependsData(module, "module")
-        }
-        return info.depends
+        } ?: return info.depends
+        return (info.depends + DependsData(module, "module")).distinctBy { it.name }
     }
 
     fun findScript(project: Project, id: String): VirtualFile? {

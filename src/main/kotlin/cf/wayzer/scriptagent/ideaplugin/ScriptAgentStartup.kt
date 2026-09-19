@@ -19,20 +19,15 @@ import java.io.File
 @OptIn(SAIDEModeApi::class)
 class ScriptAgentStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
+        // Fixed convention: the Maven library cache lives in <projectRoot>/libs (matches testProject).
+        // libraryDir is the only framework global IDE analysis truly needs. Config.rootDir is
+        // intentionally left unset so any incidental use fails loudly. Set libraryDir before the
+        // metadata hook: every findMetadata/analysis call then implies it is already initialized.
+        project.basePath?.let { Config.libraryDir = File(it, "libs").toPath() }
         IDEMode.ideMetadataSource = ::findMetadata
     }
 
-    @Volatile
-    private var configInitialized = false
-
     private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {
-        // Initialize Config paths based on the scripts root directory
-        if (!configInitialized) {
-            configInitialized = true
-            Config.rootDir = root
-            Config.libraryDir = root.resolveSibling("libs").toPath()
-        }
-
         val project = LocalFileSystem.getInstance().findFileByIoFile(root)?.let { vRoot ->
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 !project.isDisposed && ProjectFileIndex.getInstance(project).isInContent(vRoot)
@@ -43,7 +38,7 @@ class ScriptAgentStartup : ProjectActivity {
         val entry = SAIndexerService.getInfo(project, vFile) ?: return@runReadActionBlocking null
 
         SACompiledScript(ScriptSource.Dummy(info)).apply {
-            dependsData = entry.depends.toSet()
+            dependsData = SAIndexerService.getDepends(project, vFile).toSet()
             importData = entry.imports.toSet()
             fqName = deriveScriptFqName(info.id).let { (pkg, name) -> "$pkg.$name" }
         }

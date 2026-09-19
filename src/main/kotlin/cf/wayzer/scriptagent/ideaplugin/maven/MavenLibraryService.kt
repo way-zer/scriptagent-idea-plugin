@@ -71,21 +71,22 @@ class MavenLibraryService(
         errors: MutableList<String>,
     ) {
         if (!visited.add(scriptId)) return
-        val info = readAction {
+        val (info, depends) = readAction {
             val file = SAIndexerService.findScript(project, scriptId) ?: return@readAction null
-            SAIndexerService.getInfo(project, file)
+            val info = SAIndexerService.getInfo(project, file) ?: return@readAction null
+            info to SAIndexerService.getDepends(project, file)
         } ?: return
 
         val script = SACompiledScript(ScriptSource.Dummy(ScriptInfo.getOrCreate(scriptId))).apply {
             importData = info.imports.toSet()
-            dependsData = info.depends.toSet()
+            dependsData = depends.toSet()
         }
 
         ManagerImpl.importToLibraries(script) { msg, key, e ->
             errors.add("$msg: $key${e?.let { " (${it.message})" } ?: ""}")
         }
 
-        for (dep in info.depends) {
+        for (dep in depends) {
             if (dep.soft) continue
             downloadRecursive(dep.name, visited, errors)
         }
