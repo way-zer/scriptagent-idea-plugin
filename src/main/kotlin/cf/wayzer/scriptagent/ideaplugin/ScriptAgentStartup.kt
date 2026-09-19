@@ -7,6 +7,7 @@ import cf.wayzer.scriptAgent.define.ScriptSource
 import cf.wayzer.scriptAgent.impl.SACompiledScript
 import cf.wayzer.scriptAgent.impl.config.IDEMode
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
+import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
@@ -25,6 +26,8 @@ class ScriptAgentStartup : ProjectActivity {
         // metadata hook: every findMetadata/analysis call then implies it is already initialized.
         project.basePath?.let { Config.libraryDir = File(it, "libs").toPath() }
         IDEMode.ideMetadataSource = ::findMetadata
+        // Force creation so the stub cache's PSI change listener is registered from project open.
+        StubCacheService.getInstance(project)
     }
 
     private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {

@@ -229,9 +229,12 @@ Value: ScriptIndexInfo
 ### Phase 3：inject Stub 合成 — ✅ 基本完成
 
 - SAResolveExtensionProvider（KaResolveExtension）
-- StubCacheService（Analysis API 签名渲染）
-- StubRefreshLineMarkerProvider（手动刷新）
-- 自动刷新/失效机制：未实现（当前需手动触发）
+- StubCacheService（Analysis API 签名渲染，project 级持久化）
+- 首屏后台生成：resolve 时缓存未命中（`getCached == null`）→ `requestRefresh` 后台生成（一次/会话）；当前分析保持未解析（红字），生成完成后重分析。缓存为 `emptyList` 表示已生成且无 `@Export`，不重复请求；`attempted` 集合防止 resolve 期间回环
+- 自动失效：project 级 `PsiTreeChangeListener`（`ScriptAgentStartup` 强制创建 service 以尽早注册）监听 `.kts` 变化 → debounce 300ms → `invalidate` + `requestRefresh`
+- 刷新后重分析：`scheduleRestart` debounce 150ms → `DaemonCodeAnalyzer.restart()`，让消费方重读 stub
+- StubRefreshLineMarkerProvider（手动强制刷新）
+- Sync 有序刷新：`DownloadDepsAction` 用 `refreshAndAwait` 等 stub 生成完成再 `reloadScriptData`，消除 fire-and-forget 竞态
 - inject 参数值补全：未实现
 
 ### Phase 4：Maven 依赖解析 — ✅ 已完成
@@ -392,7 +395,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 
 ## 十一、已知限制与 TODO
 
-1. **Stub 缓存无自动失效**：目标脚本的 @Export 成员变更后，需用户手动点击 gutter icon 刷新。可通过监听 FileBasedIndex 变更事件实现自动刷新。
+1. **Stub 刷新策略**：`.kts` 变化后 debounce 300ms 自动失效并重新生成，完成后重启 daemon 让消费方重读；即使 `@Export` 未变也会重算（未做签名 diff）。无 `@Export` 的脚本缓存为空列表，不会反复请求。
 
 2. **SAScriptDependenciesProvider 为空**：跨脚本源码关联完全依赖 ScriptConfiguration 通道。如果 K2 分析引擎未正确识别跨脚本类型引用，可能需要启用此通道。
 

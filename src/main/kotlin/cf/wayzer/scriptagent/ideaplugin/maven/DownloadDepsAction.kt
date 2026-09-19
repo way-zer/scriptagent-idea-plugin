@@ -9,6 +9,7 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.application.readAction
 import org.jetbrains.kotlin.idea.core.script.k2.ReloadScriptConfigurationService
 import org.jetbrains.kotlin.idea.core.util.toPsiFile
 import org.jetbrains.kotlin.psi.KtFile
@@ -47,17 +48,20 @@ class DownloadDepsAction : AnAction(
                 .notify(project)
 
             if (success) {
-                // Refresh stubs for this script and its dependencies
+                // Generate stubs first, then reload: the new configuration must be analyzed against
+                // up-to-date stubs (previously fire-and-forget, racing the reload).
                 val stubService = StubCacheService.getInstance(project)
-                stubService.refreshAsync(info.id)
-                for (dep in info.depends) {
-                    if (!dep.soft) stubService.refreshAsync(dep.name)
+                stubService.refreshAndAwait(info.id)
+                for (dep in readAction { SAIndexerService.getDepends(project, file) }) {
+                    if (!dep.soft) stubService.refreshAndAwait(dep.name)
                 }
 
-                // Trigger ScriptConfiguration reload
-                val ktFile = file.toPsiFile(project) as? KtFile
-                if (ktFile != null) {
-                    ReloadScriptConfigurationService.getInstance(project).reloadScriptData(ktFile)
+                // PSI/index access from the download coroutine (Dispatchers.Default) needs a read action.
+                readAction {
+                    val ktFile = file.toPsiFile(project) as? KtFile
+                    if (ktFile != null) {
+                        ReloadScriptConfigurationService.getInstance(project).reloadScriptData(ktFile)
+                    }
                 }
             }
         }

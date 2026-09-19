@@ -37,9 +37,12 @@ class MavenLibraryService(
      * Shows background progress in the IDE.
      */
     @OptIn(SAInternalApi::class, SAIDEModeApi::class)
-    fun downloadForScript(scriptId: String, onComplete: (success: Boolean, message: String) -> Unit = { _, _ -> }) {
+    fun downloadForScript(
+        scriptId: String,
+        onComplete: suspend (success: Boolean, message: String) -> Unit = { _, _ -> },
+    ) {
         if (!downloading.compareAndSet(false, true)) {
-            onComplete(false, "Download already in progress")
+            scope.launch { onComplete(false, "Download already in progress") }
             return
         }
         scope.launch {

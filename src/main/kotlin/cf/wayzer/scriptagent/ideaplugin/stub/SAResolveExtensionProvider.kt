@@ -86,8 +86,15 @@ internal class SAStubFile(
     override fun getTopLevelCallableNames(): Set<Name> = emptySet()
 
     override fun buildFileText(): String {
-        val exports = StubCacheService.getInstance(project).getCached(scriptId)
-        if (exports.isNullOrEmpty()) return ""
+        val cache = StubCacheService.getInstance(project)
+        val exports = cache.getCached(scriptId)
+        if (exports == null) {
+            // First sight in this session: generate in the background. This analysis keeps the stub
+            // unresolved (red); it is refreshed once generation completes.
+            cache.requestRefresh(scriptId)
+            return ""
+        }
+        if (exports.isEmpty()) return ""
         return buildString {
             appendLine("package $pkg")
             appendLine("abstract class $className {")
