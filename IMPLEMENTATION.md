@@ -445,6 +445,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
       - **Sync 按钮**：浮动工具条上那个 action 按上下文改名 —— `module.kts` 显示 **"Sync Module"**（下载模块依赖 / 刷 stub / 重建 companion 模块 classpath / 重新分析），其它 `.kts` 仍是 "Sync Script Dependencies"。`ScriptIndexToolWindow` 是调试面板，不放用户按钮。
       - 补充：插件已 bundled `kotlin-stdlib-2.3.20.jar`（= `Config.BundleKotlinVersion`，在 `plugins/idePlugin/lib/`），本可直接复用；当前统一走 `DependencyManager` 解析（只有 Sync 会真正下载）
       - 未采用：`-Dkotlin.java.stdlib.jar=...` 等系统属性可让 `KotlinJars` 返回指定 jar，但 JVM 全局、影响整个 IDE
+- [ ] （已知，暂不修）**global 里已注册的依赖在文件缺失时 Sync 不会重新下载**：`DependencyBuilder.require` 遇到 `parentDependency`（= `globalDependency`）里的**同版本**会直接 return —— `String.older` 对相等版本返回 true，于是该依赖进不了 `dependencies`，`getFiles()` / `downloadAll` 自然轮不到它。表现：把 `<libs>` 里的 `kotlin-stdlib` 等删掉后再点 Sync，不会补回来（IDE 启动时又把同版本注册成 global，重启也一样）。绕过：手动放回 jar，或本地跑一次服务端（`ScriptAgent.load()` 走 `LibraryManager`，不受 globals 影响）。要修得让下载路径绕开 globals，或在 Sync 前清掉这几个 global。
 - [ ] library `SOURCES` 对接（已调研，未实现）：
       - 现状只加 `OrderRootType.CLASSES`，没有 `SOURCES`，Ctrl+Click 只能看反编译
       - 坐标现成：`Dependency` 已有 `classifier` 字段，`Dependency(g, n, v, classifier = "sources")` 的 `getUrlPath("jar")` / `getFile("jar")` 就是 `<name>-<version>-sources.jar`（落 `<project>/libs/`），`loadOrStore` 同样"有就跳过"

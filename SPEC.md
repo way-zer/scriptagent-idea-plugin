@@ -15,3 +15,8 @@ IDE插件功能：
 IDE中，Stub的类名为 scripts.math.TestUtil 形式，对应math/testUtil脚本，Stub的内容kts中标注@Export的成员声明。
 
 testProject中为本插件的测试项目，包含一个极简的SA项目，但是可以用于测试IDE插件的各项功能。
+
+协作说明：
+- 我可能会在中途review和修改代码，尽量通知你。
+- 我一般不会去修改注释，不一致你负责维护
+- 我review没啥问题时，会通知你收尾，你进行最终检查，按提示操作。
