@@ -382,16 +382,52 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 - 需要能看到 Stubs（inject 合成的 abstract class）
 - 补全、导航、错误检查应正常工作
 
-**方案方向**：
-- 可能需要为 scripts 目录创建一个 IDEA Module（通过 `AdditionalLibraryRootsProvider` 或程序化创建 `ModuleEntity`），将 companion `.kt` 纳入其 source root
-- 该 Module 的 classpath 需要动态配置，与宿主脚本的 ScriptConfiguration 对齐
-- 或者利用 `ScriptAdditionalIdeaDependenciesProvider` 让 companion `.kt` 关联到正确的依赖
+**调研结论（2025.3 / K2）**：
+- `KaScriptModule` 只代表单个 `.kts`（`KaScriptModuleImpl.getFile()`）；`KotlinScriptEntity` 只有 `virtualFileUrl` + `configurationId`，配置里的 `addSources` 在 IDE 不参与 → companion `.kt` 只是所在 IntelliJ 模块的普通源文件。
+- `ScriptAdditionalIdeaDependenciesProvider` 仅被 `KaScriptModuleImpl` 消费 → 只能给脚本加依赖，给不了普通 `.kt`。
+- `AdditionalLibraryRootsProvider`/`SyntheticLibrary` 的库不进入 `OrderEnumerator`（模块 classpath）→ 给不了 classpath。
+- **可用钩子**：EP `org.jetbrains.kotlin.k2KaModuleFactory`（`FirKaModuleFactory.createKaModuleByPsiFile`）。`CandidateCollector` 遍历所有实现，返回非 null 即成为该文件的模块候选。
+
+**已尝试并失败：KA module hook（勿重复）**
+- EP `org.jetbrains.kotlin.k2KaModuleFactory` 的 `createKaModuleByPsiFile` 确实是「按文件定模块」的入口（`CandidateCollector` 遍历它，非空即成候选），但 KA 内部要求**具体实现类**：
+  - 返回自定义 `KaModule` → `does not have a corresponding resolution strategy`；
+  - 返回自定义 `KaSourceModule` wrapper → `K2IDEProjectStructureProvider.getOpenapiModule` 里 `Expected class KaSourceModuleBase, but got CompanionModule`；
+  - 返回宿主 `KaScriptModule` 的 wrapper → 同一文件被两个模块拥有（split-brain），自身分析出现 `INVISIBLE_REFERENCE`（私有跨模块）。
+- 结论：**插件层无法给普通 `.kt` 注入自定义 `KaModule`**；只有 Kotlin 插件自带的脚本工厂能造出 `KaScriptModuleImpl`/`KaSourceModuleBase` 这些被内部硬转换依赖的具体类。
+
+**已实现：工程模型建 IntelliJ Module（Phase 5 选项 b）**
+- 实现（`companion/SAModuleLibraries`）：扫描 `module.kts` 同目录 `lib/`（含 `.kt`），用 `ModuleManager.getModifiableModel().newModule(<project>/.idea/SA-<id>.iml, "JAVA_MODULE")` 建模块，content root = SA 模块目录、source root = `lib`，模块级 Library 挂宿主脚本的 Maven/`libraryByClass` 依赖 + 框架 classes，再 `inheritSdk()`。
+- **时机是关键**：平台在工程打开后会异步把 JPS 模型同步进 workspace model（`JpsProjectModelSynchronizer - Attempt 1: Apply JPS storage (iml files)` → `ProjectSynchronizerUtilImpl.applyJpsModelToProjectModel`）。这次同步以 JPS storage（`.iml` + `.idea/modules.xml`）为准，**早于它的工程模型改动会被整轮覆盖**——现象就是模块「出现一下又消失」（连续 3 个 session 都在 attach 后 ~5s 被清掉）。
+- 因此 `ScriptAgentStartup`（`postStartupActivity`）先 `(WorkspaceModel.getInstance(project) as WorkspaceModelInternal).awaitSynchronizationWithJpsModel()` 等同步完成，再 `SAModuleLibraries.install()`。这个等待只是协程挂起，不阻塞任何东西：平台的 `postStartupActivity` `ProjectActivity` 是 `launch` 出去的（`StartupManagerImpl` 只把 Job 记进 `runningProjectActivities`，从不 join），`allActivitiesPassed` 在所有活动**派发完毕**时就 complete。`JpsProjectLoadingManager.jpsProjectLoaded` 已废弃（废弃信息指向的就是上面这个 API），勿用。
+- 佐证：`testProject/.idea/modules.xml` 曾被平台改写（git diff 只少一个行尾换行）却没有 `SA-coreLibrary` 条目；磁盘上不存在 `SA-coreLibrary.iml`。
+- 代价：会向用户工程写入 `SA-*.iml` + `modules.xml` 条目（本仓库 `testProject/.idea/modules.xml` 受版本控制），是对用户工程的**持久副作用**。
+- **第二关：模块建对了、library 也在，但依赖全红**。模块/内容根/源码根/module-library 全部正确（indexing diagnostic 显示 `Module 'SA-coreLibrary' (coreLibrary)` 扫到 2 个文件），但 `lib/StringUtils.kt` 仍报 `Unresolved reference 'google' / 'Gson' / 'replaceFirstChar' / 'repeat'`。根因：**library 的 CLASSES root 写成了 `file://<path>.jar`，正确写法是 `jar://<path>!/`（archive root）**。`file://...jar` 被 IntelliJ 当成普通文件/目录，classpath 实际为空 —— 所以连 stdlib（本机打包在 `lib/util-8.jar`）都解析不到。修法：`libraryRootUrl()` 里 jar 用 `jar://` + path + `!/`，目录才用 `file://`。
+- 装完 `DaemonCodeAnalyzer.restart` 一次。曾给模块补过默认 `KotlinFacetType` facet，真因是 root URL；已去掉并验证不需要（facet 只承载"这个 Module 是 Kotlin 模块 + 编译设置"，不是 classpath 容器）。
+- framework classpath 与脚本对齐（对应 `SAConfiguration.baseConfiguration` + `IDEMode` 的几条 `updateClasspath`）：`classpathFromClass<SAScript>()` + `KotlinJars.kotlinScriptStandardJarsWithReflect` + `dependenciesFromClass(CoroutineScope::class)`。本机 IU-262 没有独立的 `kotlin-stdlib.jar`，stdlib 打包在 IDEA 的 `lib/util-8.jar` 里，由 `KotlinJars.kotlinStdLib` 取出来。这些 File 可能不在 VFS 中，`findFileByIoFile` 会静默返回 null，要用 `refreshAndFindFileByIoFile`。
+- **待收敛**：框架 classpath 会把 IDEA 自带 jar（`util-8.jar`、`kotlin-plugin.jar`、`intellij.libraries.kotlin.reflect`、`intellij.libraries.kotlinx.coroutines.core`）一起带进模块 library，等于把 IDE 内部库暴露给用户工程（同 §11.5 的 slf4j 问题）。
+
+**粒度约束：module 只能按目录归属（决定 sibling companion 怎么处理）**
+- IntelliJ 工程模型的「归属半径」是 content root（目录）：`ProjectFileIndex.getModuleForFile` 按 content root 判定，最深的赢；content root / source root 本质是目录级索引，**没有「某个文件属于某个 module」这种粒度**。
+- 能挂单个文件的地方只有 library roots 和 `SyntheticLibrary`/`AdditionalLibraryRootsProvider`：前者不进模块 `OrderEnumerator`（见上）；后者会让文件变成「库文件」而不是工程源码。都换不到「给单个 `.kt` 独立 classpath」。
+- 同一个目录不能同时作为两个 module 的 content root（Project Structure 会报 content root 冲突，归属也不确定）→ **「每个宿主脚本一个 module」在脚本同目录共存时不成立**。这正是早期 `calc.kts`/`calc.helper.kt` 方案走不通的根本原因。
+- 结论：**classpath 的粒度上限 = 目录**。sibling `<base>.<xxx>.kt` 只能用「按目录建 module + 该目录脚本依赖的并集」支持（只会多看到别的脚本的依赖，不会误报红）。
+
+**备选（未定）**：
+- (a) `HighlightInfoFilter` 屏蔽 companion `.kt` 里的未解析/不可见引用假红：小、不可见、零工程改动；但没有补全/跳转，且会掩盖真实错误。
+- (b) 工程模型改动（建专用 Module 配 classpath）：已按上述实现；用户可见、写受版本控制的 `.idea` 文件——与「小 + 不可见」冲突。
+- (c) 暂不做，接受 companion 里 classpath 相关的红。
+- (d) 在 SA 运行时侧让 companion 成为一等 script（例如统一为 `.kts`）：IDE 侧复用已有的 `KaScriptModule` 机制，零工程模型改动 —— 需改 SPEC，待确认。
+- (e) 把 companion 支持从「`module.kts` 的 `lib/`」扩到「按目录」：content root = 脚本目录，classpath = 该目录所有脚本依赖的并集，sibling `.kt` 即可解析（复用现有 `SAModuleLibraries`，只改扫描规则）。
 
 **TODO**：
-- [ ] 调研 IntelliJ 中为离散 .kt 文件提供自定义 classpath 的机制（Module vs Library roots vs 其他）
-- [ ] 确定 companion .kt 如何发现其宿主脚本（文件名约定 / 目录约定）
-- [ ] 确保 companion .kt 能访问 Stubs 和 Maven libraries
-- [ ] 与 Maven 依赖解析（9.1）协调——companion .kt 的 classpath 依赖 Maven JAR 已下载
+- [x] 调研 IDE 侧机制（结论见上）
+- [x] companion .kt 宿主发现规则（文件名 + lib 目录约定）
+- [x] 试做选项 (b)：建 IntelliJ Module（结论：必须等 JPS→workspace 同步完成后再建）
+- [x] 验证时机：模块能稳定留存（runIde 23:42 起）
+- [x] 验证 classpath：`lib/StringUtils.kt` 的 Gson / stdlib 解析正常（修 `jar://...!/` 后）
+- [ ] 收敛框架 classpath：剔掉 IDEA 内部 jar（`util-8.jar` / `kotlin-plugin.jar` / `intellij.libraries.*`）
+- [x] 验证去掉 Kotlin facet 后 companion 仍正常（需先删掉带 facet 的旧 `SA-*.iml`）
+- [ ] 决定 sibling companion 走哪条路：(c) 不做 / (d) 改 `.kts` / (e) 按目录建 module
 
 ## 十一、已知限制与 TODO
 
@@ -401,7 +437,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 
 3. **Import 类型推断启发式**：`PsiAnnotationExtractor.inferType` 在无显式标志时按字符串格式推断，需与框架运行时行为保持一致。
 
-4. **companion .kt 文件无 IDE 支持**：脱离 Gradle 后这些文件将变成离散文件，IDE 无法为其提供正确的 classpath 和类型解析。
+4. **companion .kt 文件支持范围有限**：目前只处理 `module.kts` 同目录 `lib/` 下的 `.kt`（§10.2 选项 b，靠专用 IntelliJ Module 提供 classpath）；同目录 `<base>.<xxx>.kt` 及其它形式暂不支持。
 
 5. **slf4j 被错误加入 classpath**：IDE 插件当前把 IDEA 自带的 slf4j 意外暴露到脚本 classpath 中，需要排查 `IDEMode` 中 `classpathFromClassloader` 的过滤逻辑。
 

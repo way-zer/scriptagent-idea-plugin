@@ -1,4 +1,5 @@
 @file:Import("coreLibrary.lib.*", defaultImport = true)
+@file:Import("com.google.code.gson:gson:2.10.1", mavenDepends = true)
 
 package coreLibrary
 

@@ -1,5 +1,6 @@
 package cf.wayzer.scriptagent.ideaplugin.maven
 
+import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.icons.AllIcons
@@ -55,6 +56,9 @@ class DownloadDepsAction : AnAction(
                 for (dep in readAction { SAIndexerService.getDepends(project, file) }) {
                     if (!dep.soft) stubService.refreshAndAwait(dep.name)
                 }
+
+                // New jars may have arrived: refresh the companion module library.
+                SAModuleLibraries.install(project)
 
                 // PSI/index access from the download coroutine (Dispatchers.Default) needs a read action.
                 readAction {

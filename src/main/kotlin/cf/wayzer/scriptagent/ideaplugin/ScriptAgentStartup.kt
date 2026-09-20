@@ -7,6 +7,7 @@ import cf.wayzer.scriptAgent.define.ScriptSource
 import cf.wayzer.scriptAgent.impl.SACompiledScript
 import cf.wayzer.scriptAgent.impl.config.IDEMode
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
+import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.project.Project
@@ -14,6 +15,10 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.platform.backend.workspace.WorkspaceModel
+import com.intellij.platform.backend.workspace.impl.WorkspaceModelInternal
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.jetbrains.kotlin.name.NameUtils
 import java.io.File
 
@@ -28,6 +33,17 @@ class ScriptAgentStartup : ProjectActivity {
         IDEMode.ideMetadataSource = ::findMetadata
         // Force creation so the stub cache's PSI change listener is registered from project open.
         StubCacheService.getInstance(project)
+        installCompanionModules(project)
+    }
+
+    /**
+     * 给 companion .kt 建专用 IntelliJ Module。平台在工程打开后会异步做一次 JPS→workspace 同步
+     * （日志 "Apply JPS storage (iml files)"），早于它的工程模型改动会被整轮覆盖（模块「出现一下
+     * 又消失」），必须先等同步完成；Dispatchers.Default 保证恢复时不落在同步所在的线程/事务里。
+     */
+    private suspend fun installCompanionModules(project: Project) = withContext(Dispatchers.Default) {
+        (WorkspaceModel.getInstance(project) as WorkspaceModelInternal).awaitSynchronizationWithJpsModel()
+        SAModuleLibraries.install(project)
     }
 
     private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {
@@ -46,7 +62,6 @@ class ScriptAgentStartup : ProjectActivity {
             fqName = deriveScriptFqName(info.id).let { (pkg, name) -> "$pkg.$name" }
         }
     }
-
 }
 
 fun deriveScriptFqName(scriptId: String): Pair<String, String> {
