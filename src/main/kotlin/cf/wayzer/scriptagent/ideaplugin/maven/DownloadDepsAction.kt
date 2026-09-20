@@ -18,6 +18,9 @@ import org.jetbrains.kotlin.psi.KtFile
 /**
  * Action triggered from the floating toolbar in .kts editors.
  * Downloads dependencies, refreshes stubs, and triggers ScriptConfiguration re-evaluation.
+ *
+ * 对 `module.kts` 我们把它呈现为 "Sync Module"：同一个流程，但对模块来说它额外决定了
+ * companion module（lib/ 下的 .kt）能看到的 classpath。
  */
 class DownloadDepsAction : AnAction(
     "Sync Script Dependencies",
@@ -33,6 +36,11 @@ class DownloadDepsAction : AnAction(
                 && file != null && file.extension == "kts"
         if (project != null) {
             e.presentation.isEnabled = !MavenLibraryService.getInstance(project).isDownloading
+        }
+        if (file?.name == "module.kts") {
+            e.presentation.text = "Sync Module"
+            e.presentation.description = "Download module dependencies, refresh stubs, " +
+                    "rebuild the companion module classpath, and reload script configuration"
         }
     }
 

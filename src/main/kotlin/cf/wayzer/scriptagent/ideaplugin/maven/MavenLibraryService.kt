@@ -6,6 +6,7 @@ import cf.wayzer.scriptAgent.define.ScriptInfo
 import cf.wayzer.scriptAgent.define.ScriptSource
 import cf.wayzer.scriptAgent.impl.ManagerImpl
 import cf.wayzer.scriptAgent.impl.SACompiledScript
+import cf.wayzer.scriptAgent.impl.config.IDEMode
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
@@ -34,6 +35,11 @@ class MavenLibraryService(
     /**
      * Downloads dependencies for a script and all its transitive dependencies.
      * Uses the same [ManagerImpl.importToLibraries] as runtime.
+     *
+     * 同时把 Kotlin runtime 下到 `<libs>`，**排在脚本依赖之前**：注册的 global 是解析依赖时的 baseline
+     * （见 [IDEMode.resolveKotlinRuntime]）。分析阶段（refine）与 companion install 都是离线的，
+     * 点一次 Sync 把两边一起补齐。runtime 部分**尽力而为**：失败只记进 `errors` 一并报出，
+     * 不中断脚本依赖的下载。
      * Shows background progress in the IDE.
      */
     @OptIn(SAInternalApi::class, SAIDEModeApi::class)
@@ -50,6 +56,14 @@ class MavenLibraryService(
                 val (errors, visited) = withBackgroundProgress(project, "Downloading Script Dependencies") {
                     val errors = mutableListOf<String>()
                     val visited = mutableSetOf<String>()
+                    // 先注册 Kotlin runtime 的 global（解析依赖的 baseline），再解析脚本依赖 —— 顺序不能反。
+                    // 尽力而为：失败不中断脚本依赖，记进 errors 一起报给用户。
+                    // 这也是唯一允许联网的调用点（用户点了 Sync），其余路径一律 offline = true。
+                    try {
+                        IDEMode.resolveKotlinRuntime()
+                    } catch (e: Exception) {
+                        errors += "Kotlin runtime: ${e.message}"
+                    }
                     downloadRecursive(scriptId, visited, errors)
                     errors to visited
                 }

@@ -30,6 +30,9 @@ class ScriptAgentStartup : ProjectActivity {
         // intentionally left unset so any incidental use fails loudly. Set libraryDir before the
         // metadata hook: every findMetadata/analysis call then implies it is already initialized.
         project.basePath?.let { Config.libraryDir = File(it, "libs").toPath() }
+        // 尽早注册：globalDependency 是解析依赖的 baseline，得排在任何依赖解析之前。
+        // libs 路径刚设好，这是能解析的最早时刻。（.kts 自己那条 refine 里也会再确保一次。）
+        IDEMode.resolveKotlinRuntime(offline = true)
         IDEMode.ideMetadataSource = ::findMetadata
         // Force creation so the stub cache's PSI change listener is registered from project open.
         StubCacheService.getInstance(project)

@@ -6,7 +6,7 @@ import cf.wayzer.scriptAgent.define.ScriptInfo
 import cf.wayzer.scriptAgent.define.ScriptSource
 import cf.wayzer.scriptAgent.impl.ManagerImpl
 import cf.wayzer.scriptAgent.impl.SACompiledScript
-import cf.wayzer.scriptAgent.impl.config.dependenciesFromClass
+import cf.wayzer.scriptAgent.impl.config.IDEMode
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.openapi.application.ApplicationManager
@@ -19,10 +19,10 @@ import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
-import kotlinx.coroutines.CoroutineScope
-import kotlin.script.experimental.jvm.util.KotlinJars
-import kotlin.script.experimental.jvm.util.classpathFromClass
 import java.io.File
+import kotlin.script.experimental.api.ScriptCompilationConfiguration
+import kotlin.script.experimental.api.dependencies
+import kotlin.script.experimental.jvm.JvmDependency
 
 /**
  * Phase 5：让 companion `.kt` 在 IDE 里有正确的 classpath。
@@ -144,12 +144,13 @@ object SAModuleLibraries {
     private fun toVirtualFile(file: File): VirtualFile? =
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)
 
-    /** 与脚本看到的 framework classpath 对齐（SAConfiguration.baseConfiguration + IDEMode）。 */
-    private fun frameworkRoots(): List<VirtualFile> {
+    /** 与 `.kts` 完全同源：config 里 updateClasspath 的结果（SA jar）+ `IDEMode.resolveKotlinRuntime(offline = true)`（隐式路径，不联网）。 */
+    private suspend fun frameworkRoots(): List<VirtualFile> {
         val files = linkedSetOf<File>()
-        files.addAll(classpathFromClass<SAScript>().orEmpty())
-        files.addAll(KotlinJars.kotlinScriptStandardJarsWithReflect)
-        files.addAll(dependenciesFromClass(CoroutineScope::class))
+        files.addAll(IDEMode.resolveKotlinRuntime(offline = true))
+        IDEMode[ScriptCompilationConfiguration.dependencies].orEmpty()
+            .filterIsInstance<JvmDependency>()
+            .flatMapTo(files) { it.classpath }
         return files.mapNotNull(::toVirtualFile)
     }
 }

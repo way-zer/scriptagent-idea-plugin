@@ -403,8 +403,19 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 - 代价：会向用户工程写入 `SA-*.iml` + `modules.xml` 条目（本仓库 `testProject/.idea/modules.xml` 受版本控制），是对用户工程的**持久副作用**。
 - **第二关：模块建对了、library 也在，但依赖全红**。模块/内容根/源码根/module-library 全部正确（indexing diagnostic 显示 `Module 'SA-coreLibrary' (coreLibrary)` 扫到 2 个文件），但 `lib/StringUtils.kt` 仍报 `Unresolved reference 'google' / 'Gson' / 'replaceFirstChar' / 'repeat'`。根因：**library 的 CLASSES root 写成了 `file://<path>.jar`，正确写法是 `jar://<path>!/`（archive root）**。`file://...jar` 被 IntelliJ 当成普通文件/目录，classpath 实际为空 —— 所以连 stdlib（本机打包在 `lib/util-8.jar`）都解析不到。修法：`libraryRootUrl()` 里 jar 用 `jar://` + path + `!/`，目录才用 `file://`。
 - 装完 `DaemonCodeAnalyzer.restart` 一次。曾给模块补过默认 `KotlinFacetType` facet，真因是 root URL；已去掉并验证不需要（facet 只承载"这个 Module 是 Kotlin 模块 + 编译设置"，不是 classpath 容器）。
-- framework classpath 与脚本对齐（对应 `SAConfiguration.baseConfiguration` + `IDEMode` 的几条 `updateClasspath`）：`classpathFromClass<SAScript>()` + `KotlinJars.kotlinScriptStandardJarsWithReflect` + `dependenciesFromClass(CoroutineScope::class)`。本机 IU-262 没有独立的 `kotlin-stdlib.jar`，stdlib 打包在 IDEA 的 `lib/util-8.jar` 里，由 `KotlinJars.kotlinStdLib` 取出来。这些 File 可能不在 VFS 中，`findFileByIoFile` 会静默返回 null，要用 `refreshAndFindFileByIoFile`。
-- **待收敛**：框架 classpath 会把 IDEA 自带 jar（`util-8.jar`、`kotlin-plugin.jar`、`intellij.libraries.kotlin.reflect`、`intellij.libraries.kotlinx.coroutines.core`）一起带进模块 library，等于把 IDE 内部库暴露给用户工程（同 §11.5 的 slf4j 问题）。
+- framework classpath 与脚本对齐（对应 `SAConfiguration.baseConfiguration` + `IDEMode` 的几条 `updateClasspath`）：`classpathFromClass<SAScript>()` + `KotlinJars.kotlinScriptStandardJarsWithReflect` + `dependenciesFromClass(CoroutineScope::class)`。这些 File 可能不在 VFS 中，`findFileByIoFile` 会静默返回 null，要用 `refreshAndFindFileByIoFile`。
+- **为什么会带进 IDEA 内部 jar（已定位到行）**：framework classpath 逐条对得上——
+
+  | 模块 library 里的 jar | 来源 |
+  |---|---|
+  | `ScriptAgent-*.jar` | `classpathFromClass<SAScript>()`（含该类的 classpath root） |
+  | `lib/util-8.jar` | `KotlinJars.stdlibOrNull` = `getLib("kotlin.java.stdlib.jar", "kotlin-stdlib.jar", JvmStatic::class)` → 含 `kotlin/jvm/JvmStatic` 的 jar |
+  | `lib/intellij.libraries.kotlin.reflect.jar` | `KotlinJars.reflectOrNull` → 含 `kotlin/reflect/full/KClasses` 的 jar |
+  | `plugins/Kotlin/lib/kotlin-plugin.jar` | `KotlinJars.scriptRuntimeOrNull` → 含 `kotlin/script/templates/standard/ScriptTemplateWithArgs` 的 jar |
+  | `lib/intellij.libraries.kotlinx.coroutines.core.jar` | `dependenciesFromClass(CoroutineScope::class)` → 含 `kotlinx/coroutines/CoroutineScope` 的 jar |
+
+  机制：`KotlinJars`（`jvmClasspathUtil.kt`，随 `kotlin-plugin.jar` 发行）是 **host 侧定位器** —— "找出包含类 X 的 jar"，并允许用系统属性 `kotlin.java.stdlib.jar` / `kotlin.java.reflect.jar` / `kotlin.script.runtime.jar` 覆盖。它假设 Kotlin 以独立 jar 发行（standalone scripting host 就是这样），而**本机 IDE 发行版根本没有独立的 `kotlin-stdlib.jar`**：stdlib 被合并进 `lib/util-8.jar`，reflect 在 `intellij.libraries.kotlin.reflect.jar`，script runtime 在 `kotlin-plugin.jar`。所以它没选错，是"如实回答"。
+- **关键结论：靠过滤剔不掉**。`lib/util-8.jar` 里同时有 `kotlin/jvm/JvmStatic` 和 `org/slf4j/Logger`（它并不含 `com/intellij/**`，是 IDEA 捆绑的**第三方** jar 杂烩）—— stdlib 与 slf4j 在同一个 jar 里，按 jar 过滤无法分离。这正是 §11.5 "slf4j 被错误加入 classpath" 的真正来源：不是过滤逻辑写错，而是 IDE 模式把 stdlib 定位到了 util-8.jar。要干净，只能不再向 IDE 的 classloader 要 Kotlin（companion module 已按此实现，见下方 TODO）。
 
 **粒度约束：module 只能按目录归属（决定 sibling companion 怎么处理）**
 - IntelliJ 工程模型的「归属半径」是 content root（目录）：`ProjectFileIndex.getModuleForFile` 按 content root 判定，最深的赢；content root / source root 本质是目录级索引，**没有「某个文件属于某个 module」这种粒度**。
@@ -425,7 +436,20 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 - [x] 试做选项 (b)：建 IntelliJ Module（结论：必须等 JPS→workspace 同步完成后再建）
 - [x] 验证时机：模块能稳定留存（runIde 23:42 起）
 - [x] 验证 classpath：`lib/StringUtils.kt` 的 Gson / stdlib 解析正常（修 `jar://...!/` 后）
-- [ ] 收敛框架 classpath：剔掉 IDEA 内部 jar（`util-8.jar` / `kotlin-plugin.jar` / `intellij.libraries.*`）
+- [x] framework classpath 统一：`.kts` 与 companion `.kt` 取同一份。Kotlin runtime = `kotlin-stdlib` / `kotlin-reflect` / `kotlinx-coroutines-core-jvm`（版本取 `Config.kotlinVersion` / `Config.kotlinCoroutineVersion`），走 `DependencyManager` 落到 `<libs>`（`loadOrStore` 已存在即跳过）。**没有** `kotlin-script-runtime`：CLI 由脚本宿主提供、IDE 由 Kotlin 插件提供（`.kts` 若因此报错就补一条 `require`）。
+      - 根因回顾：`baseConfiguration` 里本来就有 `updateClasspath(DependencyManager.globalDependency.values...)`，但那一组**只在 CLI 里**被 `ScriptAgent.afterStdLib()`（`addAsGlobal()`）填充；IDE 下 `globalDependency` 为空 → `IDEMode` 只好用 `KotlinJars` + `getResourcePathForClass(CoroutineScope)` 补 Kotlin，两边就此分叉（Kotlin 被定位到 IDE 自带 jar 的来源见上面的表）。
+      - 统一形态：`baseConfiguration` 保持原样（那两条 `updateClasspath` 服务 CLI）；`IDEMode` 删掉那两条补丁，改调独立一步 `refineFrameworkClasspath()`；companion 侧取 `IDEMode[ScriptCompilationConfiguration.dependencies] → JvmDependency.classpath`（SA jar）+ 同一个 `resolveKotlinRuntime`。classpath 是读时解析、不吃 `baseConfiguration` 的一次性快照，所以 Sync 完 `reloadScriptData` 当场生效。
+      - 落地（最终形态）：**classpath 不再吃 `baseConfiguration` 的快照；但 `globalDependency` 仍要注册**。`baseConfiguration` 保持原样（那两条 `updateClasspath` 服务 CLI 的 globalDependency + SA jar）；`IDEMode` 删掉 `KotlinJars` / `getResourcePathForClass(CoroutineScope)` 两条补丁，改为在 `beforeCompilingIDEMode` 里调独立一步 `refineFrameworkClasspath()`（成员扩展，紧挨着已有的 `scripts/classes` 那条 framework classpath），内部 `addClassPath(runBlocking { resolveKotlinRuntime(offline = true) })`；`resolveKotlinRuntime(offline = false)` 是 `IDEMode` 的成员，按 `offline` 从 `<libs>` 解析并 `addAsGlobal()` 注册 —— **注册这一半必须保留**：`globalDependency` 同时是 `DependencyBuilder.parentDependency`，决定"已 loaded"的依赖在脚本解析时被跳过还是报版本冲突，不填就和 runtime 对不上；`offline` 策略：**没有用户显性操作不允许联网** —— 启动注册（`ScriptAgentStartup`）、refine 分析、companion install 三条隐式路径都显式传 `true`；只有用户点 Sync 的 `MavenLibraryService` 传 `false`。默认值是 `false`（按“suspend 侧本就允许下载”定的），但隐式路径不该依赖它。
+      - **时序**：注册这一半必须早于任何依赖解析 —— `ScriptAgentStartup.execute` 里 `Config.libraryDir` 设好之后第一件事就调它（早于 companion install / 其它解析路径）；`.kts` 自己那条 refine 里 `refineFrameworkClasspath()` 又排在 `refineForDepsIDEMode(...)` 之前，所以每条脚本的依赖解析之前都保证注册过。坑：`beforeCompilingIDEMode` 的 body 会被 inline 进 object 的初始化式，直接调成员会报 `Cannot access '<this>' before the instance has been initialized` —— 要像文件里其它 helper 一样 `import IDEMode.xxx` 之后再调用。companion 侧 `SAModuleLibraries.frameworkRoots()` = `IDEMode[ScriptCompilationConfiguration.dependencies] → JvmDependency.classpath`（SA jar）+ `IDEMode.resolveKotlinRuntime(offline = true)`。
+      - **联网**：`MavenLibraryService.downloadForScript`（用户点 Sync）在同一 `withBackgroundProgress` 块里**先**调 `IDEMode.resolveKotlinRuntime()`（默认 `offline = false`）**再** `downloadRecursive(...)` —— 注册 baseline 必须排在解析脚本依赖之前；**这是唯一允许联网的调用点**。runtime 部分尽力而为：失败 `try/catch` 后 `errors += "Kotlin runtime: ..."`，不中断脚本依赖。下完由 `reloadScriptData` + `SAModuleLibraries.install` 当场生效。**runtime 引导流程（`ScriptAgent.afterStdLib`）保持原样不动** —— 引导阶段不引用其它类更安全。
+      - **Sync 按钮**：浮动工具条上那个 action 按上下文改名 —— `module.kts` 显示 **"Sync Module"**（下载模块依赖 / 刷 stub / 重建 companion 模块 classpath / 重新分析），其它 `.kts` 仍是 "Sync Script Dependencies"。`ScriptIndexToolWindow` 是调试面板，不放用户按钮。
+      - 补充：插件已 bundled `kotlin-stdlib-2.3.20.jar`（= `Config.BundleKotlinVersion`，在 `plugins/idePlugin/lib/`），本可直接复用；当前统一走 `DependencyManager` 解析（只有 Sync 会真正下载）
+      - 未采用：`-Dkotlin.java.stdlib.jar=...` 等系统属性可让 `KotlinJars` 返回指定 jar，但 JVM 全局、影响整个 IDE
+- [ ] library `SOURCES` 对接（已调研，未实现）：
+      - 现状只加 `OrderRootType.CLASSES`，没有 `SOURCES`，Ctrl+Click 只能看反编译
+      - 坐标现成：`Dependency` 已有 `classifier` 字段，`Dependency(g, n, v, classifier = "sources")` 的 `getUrlPath("jar")` / `getFile("jar")` 就是 `<name>-<version>-sources.jar`（落 `<project>/libs/`），`loadOrStore` 同样"有就跳过"
+      - **平台没有通用钩子**：`lib/*.jar` 里没有任何 `DownloadSources` 类，只有 `plugins/maven-plugin/lib/intellij.maven.jar`（`MavenDownloadSourcesRequest`）和 Gradle 集成各自实现 —— IDE 自带的 "Download Sources" 对我们自建的 module library 不生效，要自己写 action/intention
+      - 建议（避免"都下"浪费）：`SOURCES` **永不预下载**；按需按依赖下载（类上 quick-fix / 浮动工具条按钮），成功后把 `jar://<path>!/` 加到 `OrderRootType.SOURCES`；失败（很多库压根不发 sources）要记住并提示，否则每次点都重试
 - [x] 验证去掉 Kotlin facet 后 companion 仍正常（需先删掉带 facet 的旧 `SA-*.iml`）
 - [ ] 决定 sibling companion 走哪条路：(c) 不做 / (d) 改 `.kts` / (e) 按目录建 module
 
@@ -439,7 +463,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 
 4. **companion .kt 文件支持范围有限**：目前只处理 `module.kts` 同目录 `lib/` 下的 `.kt`（§10.2 选项 b，靠专用 IntelliJ Module 提供 classpath）；同目录 `<base>.<xxx>.kt` 及其它形式暂不支持。
 
-5. **slf4j 被错误加入 classpath**：IDE 插件当前把 IDEA 自带的 slf4j 意外暴露到脚本 classpath 中，需要排查 `IDEMode` 中 `classpathFromClassloader` 的过滤逻辑。
+5. **slf4j 被错误加入 classpath**：根因已定位（见 §10.2）—— IDE 模式下 Kotlin stdlib 来自 `lib/util-8.jar`，而该 jar 里同时打包了 `org/slf4j/Logger`。不是过滤逻辑写错，而是 stdlib 与 IDEA 内部库同 jar、无法分离；要干净 classpath 只能改用自己下载的 Kotlin runtime。
 
 6. **不存在的 @Depends 导致整个文件分析失败**（上游限制）：`FirScriptConfiguratorExtensionImpl.configure` 中 `getOrLoadConfiguration` 的结果通过 `valueOr` 处理——`Failure` 会 `addErrorElement + return` 导致整个文件停止分析，而 `Success` 带的 diagnostics 会被完全忽略。因此无法通过 ScriptConfiguration 通道报告部分错误（如"依赖 X 未找到"）同时保持文件可用。当前 `ScriptAnnotationAnnotator` 已独立检查不存在的 `@Depends` 并报错，但 `refineForDepsIDEMode` 中 FATAL 仍会导致文件分析中断。可能的解决路径：
    - 等待上游（Kotlin scripting 框架）支持 Success diagnostics 的展示
