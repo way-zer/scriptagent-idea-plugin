@@ -445,7 +445,11 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
       - **Sync 按钮**：浮动工具条上那个 action 按上下文改名 —— `module.kts` 显示 **"Sync Module"**（下载模块依赖 / 刷 stub / 重建 companion 模块 classpath / 重新分析），其它 `.kts` 仍是 "Sync Script Dependencies"。`ScriptIndexToolWindow` 是调试面板，不放用户按钮。
       - 补充：插件已 bundled `kotlin-stdlib-2.3.20.jar`（= `Config.BundleKotlinVersion`，在 `plugins/idePlugin/lib/`），本可直接复用；当前统一走 `DependencyManager` 解析（只有 Sync 会真正下载）
       - 未采用：`-Dkotlin.java.stdlib.jar=...` 等系统属性可让 `KotlinJars` 返回指定 jar，但 JVM 全局、影响整个 IDE
-- [ ] （已知，暂不修）**global 里已注册的依赖在文件缺失时 Sync 不会重新下载**：`DependencyBuilder.require` 遇到 `parentDependency`（= `globalDependency`）里的**同版本**会直接 return —— `String.older` 对相等版本返回 true，于是该依赖进不了 `dependencies`，`getFiles()` / `downloadAll` 自然轮不到它。表现：把 `<libs>` 里的 `kotlin-stdlib` 等删掉后再点 Sync，不会补回来（IDE 启动时又把同版本注册成 global，重启也一样）。绕过：手动放回 jar，或本地跑一次服务端（`ScriptAgent.load()` 走 `LibraryManager`，不受 globals 影响）。要修得让下载路径绕开 globals，或在 Sync 前清掉这几个 global。
+- [ ] **（待修）global 里已注册的依赖在文件缺失时 Sync 不会重新下载** —— 已实测，**重启也无效**：
+      - 机理：`DependencyBuilder.require` 撞上 `parentDependency`（= `globalDependency`）里的**同版本**就直接 return（`String.older` 对相等版本返回 true）→ 该依赖进不了 `dependencies` → `getFiles()` / `downloadAll` 轮不到它。启动那步 `addAsGlobal()` 又会把同版本注册回去（`putAll` 在 `resolved()` 之后；offline 下 `resolved()` 的失败被吞，所以照样注册），因此重启无效。
+      - 表现：删掉 `<libs>` 里的 `kotlin-stdlib` 等之后点 Sync 补不回来；脚本自己的依赖不受影响（它们不在 globals 里）。
+      - 绕过：手动放回 jar，或本地跑一次服务端（`ScriptAgent.load()` 走 `LibraryManager`，不经过 globals）。
+      - 修法候选：(a) Sync 路径按坐标直接 `Repositories.loadOrDownload(dep.getUrlPath("jar"), dep.getFile("jar"))`，完全绕开 globals；(b) 进 builder 前把这几个 id 从 `globalDependency` 里清掉（`internal`，`IDEMode` 同模块可访问）；(c) 更根本：`require` 在"parent 里同版本但本地文件不存在"时不该跳过 —— 会改到 CLI 的解析语义，需谨慎。
 - [ ] library `SOURCES` 对接（已调研，未实现）：
       - 现状只加 `OrderRootType.CLASSES`，没有 `SOURCES`，Ctrl+Click 只能看反编译
       - 坐标现成：`Dependency` 已有 `classifier` 字段，`Dependency(g, n, v, classifier = "sources")` 的 `getUrlPath("jar")` / `getFile("jar")` 就是 `<name>-<version>-sources.jar`（落 `<project>/libs/`），`loadOrStore` 同样"有就跳过"
