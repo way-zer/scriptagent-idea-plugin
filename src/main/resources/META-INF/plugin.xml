@@ -32,6 +32,8 @@
 
         <notificationGroup id="ScriptAgent" displayType="BALLOON"/>
 
+        <attachSourcesProvider implementation="cf.wayzer.scriptagent.ideaplugin.maven.SAAttachSourcesProvider"/>
+
         <psi.referenceContributor language="kotlin"
                 implementation="cf.wayzer.scriptagent.ideaplugin.navigation.ScriptDependsReferenceContributor"/>
         <annotator language="kotlin"

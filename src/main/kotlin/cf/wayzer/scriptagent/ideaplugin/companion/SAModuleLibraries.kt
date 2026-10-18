@@ -18,6 +18,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 import kotlin.script.experimental.api.ScriptCompilationConfiguration
@@ -25,11 +26,9 @@ import kotlin.script.experimental.api.dependencies
 import kotlin.script.experimental.jvm.JvmDependency
 
 /**
- * Phase 5：让 companion `.kt` 在 IDE 里有正确的 classpath。
- *
- * 范围限定为 `module.kts` 同目录的 `lib`（其余 companion 形式见 IMPLEMENTATION §10.2 的粒度约束）。
- * 每个这样的目录一个 IntelliJ Module：content root = SA 模块目录，source root = `lib`，
- * 模块级 library = 该 module.kts 解析出的依赖 + 框架 classpath。
+ * Phase 5：让 companion `.kt` 在 IDE 里有正确的 classpath。范围见 IMPLEMENTATION §10.2（只处理 lib/）。
+ * 每个 `module.kts`/`lib` 目录一个 IntelliJ Module：content root = SA 模块目录，source root = `lib`；
+ * library 的 CLASSES = module.kts 的依赖 + 框架 classpath，SOURCES = 其中已下载的 sources（见 §10.3）。
  */
 object SAModuleLibraries {
     private val LOG = Logger.getInstance(SAModuleLibraries::class.java)
@@ -53,10 +52,12 @@ object SAModuleLibraries {
         if (moduleLibs.isEmpty()) return
         val framework = frameworkRoots()
         for (entry in moduleLibs) {
-            val roots = linkedSetOf<VirtualFile>()
-            scriptLibraries(project, entry.id).forEach { toVirtualFile(it)?.let(roots::add) }
-            roots.addAll(framework)
-            ensureModule(project, "SA-" + entry.id.replace('/', '-'), entry.contentDir, entry.sourceDir, roots.toList())
+            val classpath = (scriptLibraries(project, entry.id).mapNotNull(::toVirtualFile) + framework).distinct()
+            // sources 只挂已经落盘的；缺失的由横幅的 "Download sources" 按需补。
+            ensureModule(
+                project, "SA-" + entry.id.replace('/', '-'), entry.contentDir, entry.sourceDir,
+                classpath, classpath.mapNotNull(::sourcesJarOf)
+            )
         }
         // 工程模型刚变过：让 daemon 重新分析，避免已打开的文件继续用旧 classpath 报错。
         ApplicationManager.getApplication().invokeLater {
@@ -85,7 +86,8 @@ object SAModuleLibraries {
         name: String,
         contentDir: VirtualFile,
         sourceDir: VirtualFile,
-        roots: List<VirtualFile>,
+        classes: List<VirtualFile>,
+        sources: List<VirtualFile>,
     ) {
         val application = ApplicationManager.getApplication()
         val action = {
@@ -107,17 +109,22 @@ object SAModuleLibraries {
                 val table = rootModel.moduleLibraryTable
                 val library = table.getLibraryByName(LIBRARY_NAME) ?: table.createLibrary(LIBRARY_NAME)
                 val libraryModel = library.modifiableModel
-                library.getFiles(OrderRootType.CLASSES).forEach {
-                    libraryModel.removeRoot(it.url, OrderRootType.CLASSES)
+                fun replaceRoots(type: OrderRootType, files: List<VirtualFile>) {
+                    library.getFiles(type).forEach { libraryModel.removeRoot(it.url, type) }
+                    files.forEach { libraryModel.addRoot(libraryRootUrl(it), type) }
                 }
-                roots.forEach { libraryModel.addRoot(libraryRootUrl(it), OrderRootType.CLASSES) }
+                replaceRoots(OrderRootType.CLASSES, classes)
+                replaceRoots(OrderRootType.SOURCES, sources)
                 libraryModel.commit()
                 if (rootModel.findLibraryOrderEntry(library) == null) {
                     rootModel.addLibraryEntry(library)
                 }
                 rootModel.inheritSdk()
                 rootModel.commit()
-                LOG.info("[SA] companion module " + module.name + ": " + roots.size + " classpath roots")
+                LOG.info(
+                    "[SA] companion module " + module.name + ": " +
+                            classes.size + " classpath roots, " + sources.size + " source roots"
+                )
             }
         }
         if (application.isDispatchThread) action() else application.invokeAndWait(action)
@@ -143,6 +150,13 @@ object SAModuleLibraries {
 
     private fun toVirtualFile(file: File): VirtualFile? =
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)
+
+    /** sources jar 就是同名兄弟文件；非 jar / 不存在的一律返回 null。 */
+    private fun sourcesJarOf(jar: VirtualFile): VirtualFile? {
+        if (jar.isDirectory || jar.extension != "jar") return null
+        val file = VfsUtilCore.virtualToIoFile(jar)
+        return toVirtualFile(File(file.parentFile, file.nameWithoutExtension + "-sources.jar"))
+    }
 
     /** 与 `.kts` 完全同源：config 里 updateClasspath 的结果（SA jar）+ `IDEMode.resolveKotlinRuntime(offline = true)`（隐式路径，不联网）。 */
     private suspend fun frameworkRoots(): List<VirtualFile> {

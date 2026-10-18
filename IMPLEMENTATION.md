@@ -445,18 +445,27 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
       - **Sync 按钮**：浮动工具条上那个 action 按上下文改名 —— `module.kts` 显示 **"Sync Module"**（下载模块依赖 / 刷 stub / 重建 companion 模块 classpath / 重新分析），其它 `.kts` 仍是 "Sync Script Dependencies"。`ScriptIndexToolWindow` 是调试面板，不放用户按钮。
       - 补充：插件已 bundled `kotlin-stdlib-2.3.20.jar`（= `Config.BundleKotlinVersion`，在 `plugins/idePlugin/lib/`），本可直接复用；当前统一走 `DependencyManager` 解析（只有 Sync 会真正下载）
       - 未采用：`-Dkotlin.java.stdlib.jar=...` 等系统属性可让 `KotlinJars` 返回指定 jar，但 JVM 全局、影响整个 IDE
-- [ ] **（待修）global 里已注册的依赖在文件缺失时 Sync 不会重新下载** —— 已实测，**重启也无效**：
+- [x] **（已修）global 里已注册的依赖在文件缺失时 Sync 不会重新下载**（实测重启也无效）：
       - 机理：`DependencyBuilder.require` 撞上 `parentDependency`（= `globalDependency`）里的**同版本**就直接 return（`String.older` 对相等版本返回 true）→ 该依赖进不了 `dependencies` → `getFiles()` / `downloadAll` 轮不到它。启动那步 `addAsGlobal()` 又会把同版本注册回去（`putAll` 在 `resolved()` 之后；offline 下 `resolved()` 的失败被吞，所以照样注册），因此重启无效。
-      - 表现：删掉 `<libs>` 里的 `kotlin-stdlib` 等之后点 Sync 补不回来；脚本自己的依赖不受影响（它们不在 globals 里）。
-      - 绕过：手动放回 jar，或本地跑一次服务端（`ScriptAgent.load()` 走 `LibraryManager`，不经过 globals）。
-      - 修法候选：(a) Sync 路径按坐标直接 `Repositories.loadOrDownload(dep.getUrlPath("jar"), dep.getFile("jar"))`，完全绕开 globals；(b) 进 builder 前把这几个 id 从 `globalDependency` 里清掉（`internal`，`IDEMode` 同模块可访问）；(c) 更根本：`require` 在"parent 里同版本但本地文件不存在"时不该跳过 —— 会改到 CLI 的解析语义，需谨慎。
-- [ ] library `SOURCES` 对接（已调研，未实现）：
-      - 现状只加 `OrderRootType.CLASSES`，没有 `SOURCES`，Ctrl+Click 只能看反编译
-      - 坐标现成：`Dependency` 已有 `classifier` 字段，`Dependency(g, n, v, classifier = "sources")` 的 `getUrlPath("jar")` / `getFile("jar")` 就是 `<name>-<version>-sources.jar`（落 `<project>/libs/`），`loadOrStore` 同样"有就跳过"
-      - **平台没有通用钩子**：`lib/*.jar` 里没有任何 `DownloadSources` 类，只有 `plugins/maven-plugin/lib/intellij.maven.jar`（`MavenDownloadSourcesRequest`）和 Gradle 集成各自实现 —— IDE 自带的 "Download Sources" 对我们自建的 module library 不生效，要自己写 action/intention
-      - 建议（避免"都下"浪费）：`SOURCES` **永不预下载**；按需按依赖下载（类上 quick-fix / 浮动工具条按钮），成功后把 `jar://<path>!/` 加到 `OrderRootType.SOURCES`；失败（很多库压根不发 sources）要记住并提示，否则每次点都重试
+      - 修法（不动 CLI 语义）：`DependencyBuilder` 增加 `skipLoaded: Boolean = true`（与 `offline` 同级的解析策略开关），把"parent 里的同版本必然已在当前 classpath 上"这条隐含假设显式化。CLI 成立（global 来自 `afterStdLib` 实际加载进 classloader 的库）；IDE 的 registration 只是解析 baseline —— offline 解析失败被吞，文件可以压根不存在。因此 `IDEMode.resolveKotlinRuntime` 置 `skipLoaded = false`：依赖照常进 `dependencies`，参与 `resolved()`/`downloadAll`。注意 `skipLoaded = false` **不是忽略 parent** —— 版本仍以 parent（global）里那一条为准，只是不再跳过，好让缺失的文件被下载。
+      - 顺带修掉一个更隐蔽的问题：`ScriptAgentStartup` 注册过 global 之后，refine / companion install 再调 `resolveKotlinRuntime(offline = true)` 本来**恒返回空**（三个坐标全被 skip），于是 `refineFrameworkClasspath()` 与 companion 的 framework classpath 实际什么都没加，Kotlin 只能靠宿主 classpath 兜底。现在两条路径都真的拿到 `<libs>` 里的 runtime 文件。
+- [x] library `SOURCES` 对接 —— 见 §10.3
 - [x] 验证去掉 Kotlin facet 后 companion 仍正常（需先删掉带 facet 的旧 `SA-*.iml`）
 - [ ] 决定 sibling companion 走哪条路：(c) 不做 / (d) 改 `.kts` / (e) 按目录建 module
+
+### 10.3 library SOURCES 对接 — ✅ 已实现
+
+**目标**：companion 模块（`module.kts` 同目录 `lib/`）的 module library 除 `OrderRootType.CLASSES` 外补上 `OrderRootType.SOURCES`，Ctrl+Click 直接进源码而不是反编译。
+
+- **触发方式**：不预下载，也没有常驻按钮。打开 `libs/*.jar` 里一个**没有源码的类**（反编译视图）时，平台横幅会列出我们的 **"Download sources (SA)"**，点一下只下这一个依赖。带 "(SA)" 后缀是因为 Maven 插件对同一个类也会摆一个 "Download Sources"（且它解析不了我们的 library），平台自己的 "Choose Sources…" 则无法去掉。
+- **SOURCES root 组成**（`SAModuleLibraries`）：对每个 classpath jar 取**同目录同名兄弟** `<name>-sources.jar`（只挂已存在的），不需要知道依赖坐标；jar root 与 CLASSES 一样必须是 `jar://<path>!/`。
+- **反向**（jar → 坐标）：`DependencyManager` 在 `load()` 解析完成后把 `dependencies` 记进内部索引（`Artifact`：jar **文件名** → 坐标 + 解析它用的仓库），暴露 `dependencyOfJar(fileName)` / `ensureSources(dep)`。按文件名而不是路径建索引，跨 project 天然一致，插件侧不再维护任何映射表。
+- **下载实现**：横幅 action 从 `PsiFile` 取 jar 文件名 → `MavenLibraryService.downloadSources(dependency, callback)` → `DependencyManager.ensureSources`（下载实现只有 `DependencyBuilder.downloadSources` 一份），成功后 `install` 重挂 SOURCES 让横幅消失。
+- **平台机制**（不用自己画 UI）：EP `com.intellij.attachSourcesProvider`（`com.intellij.codeInsight.AttachSourcesProvider`，动作实现 `LightAttachSourcesAction`）+ `attachSourcesProviderFilter`；横幅由 `AttachSourcesNotificationProvider`（`plugins/java/lib/modules/intellij.java.ui.jar`）统一渲染 —— 它只对 `JavaClassFileType`（`.class`）生效，按"打开的文件 → 所属 `LibraryEntity`"找库，再调 `getLibrariesActions` / `perform(entities, project)`。Maven 就是这样接的（`MavenAttachSourcesProvider`），Gradle 用 filter 排掉别人的 provider。
+- **失败处理**：拉不到的坐标记进 `MavenLibraryService.sourcesUnavailable`（会话内），横幅不再为它出现；已存在的 sources jar 由 `loadOrStore` 直接跳过。
+- **未覆盖 / TODO**：
+      - `.kts` 自己的 classpath 走 `ScriptCompilationConfiguration`，没有 sources 通道；但它的依赖 jar 同时是 companion library 的 root，所以在 `.kts` 里 Ctrl+Click 到这些类时横幅**可能**同样出现（待 runIde 验证）。
+      - 待 runIde 验证：module 级 library 能否被 `findLibraryEntitiesForFile` 命中（Maven 也是 module/project 级，大概率可以）。
 
 ## 十一、已知限制与 TODO
 
@@ -468,7 +477,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 
 4. **companion .kt 文件支持范围有限**：目前只处理 `module.kts` 同目录 `lib/` 下的 `.kt`（§10.2 选项 b，靠专用 IntelliJ Module 提供 classpath）；同目录 `<base>.<xxx>.kt` 及其它形式暂不支持。
 
-5. **slf4j 被错误加入 classpath**：根因已定位（见 §10.2）—— IDE 模式下 Kotlin stdlib 来自 `lib/util-8.jar`，而该 jar 里同时打包了 `org/slf4j/Logger`。不是过滤逻辑写错，而是 stdlib 与 IDEA 内部库同 jar、无法分离；要干净 classpath 只能改用自己下载的 Kotlin runtime。
+5. **slf4j 被错误加入 classpath** —— 已随 Kotlin runtime 统一而消失：旧实现用 `KotlinJars` 向 IDE 要 Kotlin，stdlib 被定位到 `lib/util-8.jar`，而该 jar 同时打包了 `org/slf4j/Logger`（按 jar 过滤无法分离）；不是过滤逻辑写错。现在 `.kts` 与 companion 的 Kotlin 都来自 `<libs>`（`IDEMode.resolveKotlinRuntime`），代码里已无 `KotlinJars` / `getResourcePathForClass` 引用（见 §10.2 的根因表，保留作历史记录）。
 
 6. **不存在的 @Depends 导致整个文件分析失败**（上游限制）：`FirScriptConfiguratorExtensionImpl.configure` 中 `getOrLoadConfiguration` 的结果通过 `valueOr` 处理——`Failure` 会 `addErrorElement + return` 导致整个文件停止分析，而 `Success` 带的 diagnostics 会被完全忽略。因此无法通过 ScriptConfiguration 通道报告部分错误（如"依赖 X 未找到"）同时保持文件可用。当前 `ScriptAnnotationAnnotator` 已独立检查不存在的 `@Depends` 并报错，但 `refineForDepsIDEMode` 中 FATAL 仍会导致文件分析中断。可能的解决路径：
    - 等待上游（Kotlin scripting 框架）支持 Success diagnostics 的展示

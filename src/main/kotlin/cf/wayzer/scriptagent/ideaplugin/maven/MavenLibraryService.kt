@@ -7,14 +7,19 @@ import cf.wayzer.scriptAgent.define.ScriptSource
 import cf.wayzer.scriptAgent.impl.ManagerImpl
 import cf.wayzer.scriptAgent.impl.SACompiledScript
 import cf.wayzer.scriptAgent.impl.config.IDEMode
+import cf.wayzer.scriptAgent.util.DependencyManager
+import cf.wayzer.scriptAgent.util.maven.Dependency
+import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.ActionCallback
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -22,6 +27,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Supports downloading for a single script and its transitive dependencies.
  * Shows progress in IDE status bar via withBackgroundProgress.
  * After download completes, ScriptConfiguration should be refreshed to pick up new JARs.
+ *
+ * 插件里**只有**两个允许联网的入口，且都只由用户显式触发：
+ * [downloadForScript]（Sync）与 [downloadSources]（库类横幅上的 "Download sources (SA)"）。
  */
 @Service(Service.Level.PROJECT)
 class MavenLibraryService(
@@ -31,6 +39,9 @@ class MavenLibraryService(
     private val downloading = AtomicBoolean(false)
 
     val isDownloading: Boolean get() = downloading.get()
+
+    /** 已确认拉不到 sources 的坐标：会话内不再重试，免得每次点都白等一遍 404。 */
+    private val sourcesUnavailable = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Downloads dependencies for a script and all its transitive dependencies.
@@ -80,6 +91,33 @@ class MavenLibraryService(
             }
         }
     }
+
+    /**
+     * 下载单个依赖的 sources —— 平台横幅（[SAAttachSourcesProvider]）的 "Download sources" 用。
+     * 结果通过 [callback] 结束；已确认拉不到的坐标不再重试。
+     */
+    fun downloadSources(dependency: Dependency, callback: ActionCallback) {
+        val key = keyOf(dependency)
+        if (key in sourcesUnavailable) {
+            callback.setRejected()
+            return
+        }
+        scope.launch {
+            val ok = runCatching { DependencyManager.ensureSources(dependency) }.getOrDefault(false)
+            if (ok) {
+                SAModuleLibraries.install(project) // 重挂 SOURCES，横幅随之消失
+                callback.setDone()
+            } else {
+                sourcesUnavailable += key
+                callback.setRejected()
+            }
+        }
+    }
+
+    /** 该坐标的 sources 是否已确认拉不到（会话内）。 */
+    fun isSourcesUnavailable(dependency: Dependency): Boolean = keyOf(dependency) in sourcesUnavailable
+
+    private fun keyOf(dependency: Dependency) = dependency.id + ":" + dependency.version
 
     @OptIn(SAInternalApi::class)
     private suspend fun downloadRecursive(
