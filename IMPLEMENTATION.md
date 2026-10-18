@@ -244,9 +244,10 @@ Value: ScriptIndexInfo
 - 入口：编辑器浮窗 "Sync Script Dependencies" 按钮（`DownloadDepsAction` + `DepsFloatingToolbarProvider`）
 - `ScriptAgentStartup.execute` 直接设置 `Config.libraryDir = <projectRoot>/libs`；`Config.rootDir` 故意不设，IDE 一旦用到会立刻抛错暴露依赖
 
-### Phase 5：companionSources kt 模块支持 — 待实现
+### Phase 5：companionSources kt 模块支持 — ✅ 部分完成（只做 `module.kts` 的 `lib/`）
 
-- 为 companion `.kt` 文件建立正确的 IDE 模块/classpath 配置
+- `lib/` 下的 `.kt` 由专用 IntelliJ Module 提供 classpath + SOURCES（见 §10.2 / §10.3）
+- 同目录 sibling `<base>.<xxx>.kt` 不做（见 §10.2 的决策）
 
 ### Phase 6：高级特性 — 待实现
 
@@ -256,11 +257,14 @@ Value: ScriptIndexInfo
 
 ### Phase 7：运行时 @Export Interface 生成 — 待实现
 
-- `deriveScriptFqName` 移至框架 main 源集
-- KCP `ExportInterfaceIrExtension`：IR 阶段生成 interface + script class implements
-- `SAConfiguration` 中 `providedProperties` 类型改为 interface FQN
-- ABI hash 机制（metadata 字段 + cache 失效判断）
-- 热重载时级联重载 inject 消费方
+落地顺序（每步独立可验证）：
+
+1. `deriveScriptFqName` 从 `idePlugin/ScriptAgentStartup.kt` 移到框架 main 源集，插件改引用（零行为变化）
+2. KCP 先只**收集** `IrClass(origin=SCRIPT_CLASS)` 里的 @Export 成员（记录/打印，不生成 interface），顺便接通目前无人写入的 `SACompiledScript.exportData`
+3. `ExportInterfaceIrExtension`：IR 阶段生成 interface + script class `implements` + `overriddenSymbols`（bridge 交给 JVM 后端）；`SAConfiguration` 的 `providedProperties` 改指 interface FQN
+4. ABI hash（metadata 字段 + `DEPS_ABI` 比对 → cache 失效）+ 热重载级联重载 inject 消费方
+
+验证手段：KCP 在 `src/loader/kotlin/kcp`（`MyRegistrar` 经 plugin.xml 的 `fir.extensions.firExtensionRegistrar` 注册），不是 IDE build，而是在 CLI 里用 `ScriptAgent.load()` 跑一遍脚本看产物。
 
 ## 九、运行时 @Export Interface 方案设计
 
@@ -451,7 +455,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
       - 顺带修掉一个更隐蔽的问题：`ScriptAgentStartup` 注册过 global 之后，refine / companion install 再调 `resolveKotlinRuntime(offline = true)` 本来**恒返回空**（三个坐标全被 skip），于是 `refineFrameworkClasspath()` 与 companion 的 framework classpath 实际什么都没加，Kotlin 只能靠宿主 classpath 兜底。现在两条路径都真的拿到 `<libs>` 里的 runtime 文件。
 - [x] library `SOURCES` 对接 —— 见 §10.3
 - [x] 验证去掉 Kotlin facet 后 companion 仍正常（需先删掉带 facet 的旧 `SA-*.iml`）
-- [ ] 决定 sibling companion 走哪条路：(c) 不做 / (d) 改 `.kts` / (e) 按目录建 module
+- [x] 决定 sibling companion 走哪条路：**保持现状（c）**。根因是 classpath 粒度（IntelliJ 只能按目录归属），没有低成本的好办法；代价是同目录 `<base>.<xxx>.kt` 里 classpath 相关引用会红。
 
 ### 10.3 library SOURCES 对接 — ✅ 已实现
 
@@ -475,13 +479,15 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 
 3. **Import 类型推断启发式**：`PsiAnnotationExtractor.inferType` 在无显式标志时按字符串格式推断，需与框架运行时行为保持一致。
 
-4. **companion .kt 文件支持范围有限**：目前只处理 `module.kts` 同目录 `lib/` 下的 `.kt`（§10.2 选项 b，靠专用 IntelliJ Module 提供 classpath）；同目录 `<base>.<xxx>.kt` 及其它形式暂不支持。
+4. **companion .kt 文件支持范围有限**：只处理 `module.kts` 同目录 `lib/` 下的 `.kt`（§10.2 选项 b，靠专用 IntelliJ Module 提供 classpath）；同目录 `<base>.<xxx>.kt` 按 §10.2 的决定保持不支持（classpath 粒度遗留问题）。
 
 5. **slf4j 被错误加入 classpath** —— 已随 Kotlin runtime 统一而消失：旧实现用 `KotlinJars` 向 IDE 要 Kotlin，stdlib 被定位到 `lib/util-8.jar`，而该 jar 同时打包了 `org/slf4j/Logger`（按 jar 过滤无法分离）；不是过滤逻辑写错。现在 `.kts` 与 companion 的 Kotlin 都来自 `<libs>`（`IDEMode.resolveKotlinRuntime`），代码里已无 `KotlinJars` / `getResourcePathForClass` 引用（见 §10.2 的根因表，保留作历史记录）。
 
 6. **不存在的 @Depends 导致整个文件分析失败**（上游限制）：`FirScriptConfiguratorExtensionImpl.configure` 中 `getOrLoadConfiguration` 的结果通过 `valueOr` 处理——`Failure` 会 `addErrorElement + return` 导致整个文件停止分析，而 `Success` 带的 diagnostics 会被完全忽略。因此无法通过 ScriptConfiguration 通道报告部分错误（如"依赖 X 未找到"）同时保持文件可用。当前 `ScriptAnnotationAnnotator` 已独立检查不存在的 `@Depends` 并报错，但 `refineForDepsIDEMode` 中 FATAL 仍会导致文件分析中断。可能的解决路径：
-   - 等待上游（Kotlin scripting 框架）支持 Success diagnostics 的展示
-   - 或自行注册 `FirScriptConfiguratorExtension`（`firstOrNull { accepts }` 机制允许替代默认实现），在其中正确处理 Failure/diagnostics
+   - 分界线在 `CompileRefineContext.failure`（任意 FATAL 即 `Failure`）：FATAL 会让整个文件停止分析；改成非 FATAL 后 `refine` 返回 `Success(config, diagnostics)`，但 Success 上的 diagnostics 会被上游丢弃 —— 这条通道上"显示错误"和"不中断"二选一。
+   - `ScriptAnnotationAnnotator` 目前能报"未找到脚本"，但那是**插件侧的重复校验**，与 core 的 refine 逻辑无法统一，不适合长期承担（这正是本项搁置的原因）。
+   - `FirScriptConfiguratorExtension` 是 compiler-side 的 `FirExtension`（`org.jetbrains.kotlin.fir.builder`，经 `FirExtensionRegistrar` 注册），`FirScriptConfiguratorExtensionImpl` 由 scripting 的 compiler plugin 自己先注册，插件层难以可靠顶掉它。
+   - **（暂缓）唯一干净的路子**：core 把 refine 诊断通过 hook（类似 `ideMetadataSource`）交给插件**渲染**，插件不再自己判断。前置是 (a) 把"依赖缺失"这类错误从 FATAL 降为可恢复，(b) 加 `ScriptDiagnostic.location` → PSI range 的映射。成本中等，暂不做。
    - 相关源码：`FirScriptConfigurationExtensionImpl.kt:88`、`k2RefinementUtil.kt`、`AbstractRawFirBuilder.kt:1417`
 
 ## 十二、与 Gradle 的关系
