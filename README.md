@@ -17,7 +17,7 @@ through the Gradle composite build, so no core publishing is needed.
     gradle :buildPlugin                       # uses the local installed IDE (fast)
     gradle :buildPlugin -PuseLocalIde=false   # downloads IDEA 2026.2 (reproducible)
 
-Output: build/distributions/idePlugin-<version>.zip
+Output: build/distributions/scriptagent-idea-plugin-<version>.zip
 
 Run a sandbox IDE:
 
@@ -31,7 +31,7 @@ Artifacts come from saRepository(): aliyun inside China, Cloudflare mirror elsew
 ## Publish alpha to JetBrains Marketplace
 
 1. Create the plugin on Marketplace (id cf.wayzer.scriptAgent.ideaPlugin), upload the first
-   idePlugin-*.zip manually and pick the alpha channel.
+   scriptagent-idea-plugin-*.zip manually and pick the alpha channel.
 2. Create an authentication token and publish later versions:
 
     set PUBLISH_TOKEN=...
