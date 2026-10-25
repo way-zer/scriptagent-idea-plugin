@@ -4,6 +4,7 @@ import cf.wayzer.scriptagent.ideaplugin.deriveScriptFqName
 import cf.wayzer.scriptagent.ideaplugin.index.PsiAnnotationExtractor
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaSession
@@ -30,19 +31,22 @@ import org.jetbrains.kotlin.utils.mapToSetOrEmpty
 class SAResolveExtensionProvider : KaResolveExtensionProvider() {
     override fun provideExtensionsFor(module: KaModule): List<KaResolveExtension> {
         if (module !is KaScriptModule) return emptyList()
+        // 只取 VirtualFile：KaScriptModule.file 可能是上一代 PSI，缓存 KtFile 会在 PSI 重建后失效
         val project = module.project
-        val ktFile = module.file
-        return listOf(SAResolveExtension(project, ktFile))
+        val vFile = module.file.virtualFile
+        return listOf(SAResolveExtension(project, vFile))
     }
 }
 
 @OptIn(KaExperimentalApi::class, KaSpiExtensionPoint::class)
 private class SAResolveExtension(
     private val project: Project,
-    private val ktFile: KtFile,
+    private val vFile: VirtualFile,
 ) : KaResolveExtension() {
     private val files by lazy {
         // Find inject dependencies from the current script's file annotations
+        // KtFile 每次从 VirtualFile 现取（缓存会在 PSI 重建后变成 Invalid PSI Element）
+        val ktFile = vFile.toPsiFile(project) as? KtFile ?: return@lazy emptyList()
         val fileAnnotations = ktFile.fileAnnotationList?.annotationEntries ?: return@lazy emptyList()
         val injectDeps = fileAnnotations
             .filter { it.shortName?.asString() == "Depends" }
@@ -70,14 +74,15 @@ internal class SAStubFile(
     private val scriptId: String,
 ) : KaResolveExtensionFile() {
     val classFqName = deriveScriptFqName(scriptId)
-    val ktFile by lazy {
-        val vFile = SAIndexerService.findScript(project, scriptId) ?: return@lazy null
-        vFile.toPsiFile(project) as? KtFile ?: return@lazy null
-    }
+
+    // 只缓存 VirtualFile（跨 PSI 重建稳定）；KtFile 每次现取 ——
+    // 缓存的 KtFile 在脚本配置重载/PSI 重建后会变成 "Invalid PSI Element ... different providers"。
+    private val vFile by lazy { SAIndexerService.findScript(project, scriptId) }
+    val ktFile: KtFile? get() = vFile?.toPsiFile(project) as? KtFile
     val pkg = classFqName.first
     val className = classFqName.second
 
-    override fun getFileName(): String = ktFile?.virtualFile?.name ?: "_$className.kt"
+    override fun getFileName(): String = vFile?.name ?: "_$className.kt"
 
     override fun getFilePackageName(): FqName = FqName.fromSegments(pkg.split("."))
 

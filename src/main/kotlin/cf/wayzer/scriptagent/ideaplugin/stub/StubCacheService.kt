@@ -1,14 +1,12 @@
 package cf.wayzer.scriptagent.ideaplugin.stub
 
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
-import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
+import cf.wayzer.scriptagent.ideaplugin.index.withIndexInSmartMode
 import cf.wayzer.scriptagent.ideaplugin.index.resolveRootAndId
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
-import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.*
-import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiTreeChangeAdapter
@@ -134,10 +132,9 @@ class StubCacheService(
 
     private suspend fun doRefresh(scriptId: String) {
         try {
-            // 生成 stub 要查索引/解析 PSI：dumb 模式下只会失败并把 attempted 占掉，先等索引结束。
-            DumbService.getInstance(project).awaitSmartMode()
+            // 生成 stub 要查索引/解析 PSI：等 smart 模式，期间索引被重建会自动重试。
             refreshMutex.withLock {
-                val signatures = readAction { generateSignatures(scriptId) }
+                val signatures = project.withIndexInSmartMode { generateSignatures(scriptId) }
                 if (signatures != null) state.stubs[scriptId] = signatures
             }
         } catch (e: CancellationException) {

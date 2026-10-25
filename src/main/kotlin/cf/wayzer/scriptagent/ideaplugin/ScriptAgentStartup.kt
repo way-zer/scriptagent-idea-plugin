@@ -10,6 +10,7 @@ import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
 import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.runReadActionBlocking
+import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -25,13 +26,15 @@ import java.io.File
 @OptIn(SAIDEModeApi::class)
 class ScriptAgentStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
+        // 只处理脚本工程：Config 里的全局（libraryDir / environments）是进程级的，无关工程不许碰。
+        if (!project.isScriptAgentScriptsProject()) return
         // 条件 import：IDE 环境
         Config.environments += "ide"
         // Fixed convention: the Maven library cache lives in <projectRoot>/libs (matches testProject).
         // libraryDir is the only framework global IDE analysis truly needs. Config.rootDir is
         // intentionally left unset so any incidental use fails loudly. Set libraryDir before the
         // metadata hook: every findMetadata/analysis call then implies it is already initialized.
-        project.basePath?.let { Config.libraryDir = File(it, "libs").toPath() }
+        project.claimScriptAgentConfig()
         // 尽早注册：globalDependency 是解析依赖的 baseline，得排在任何依赖解析之前。
         // libs 路径刚设好，这是能解析的最早时刻。（.kts 自己那条 refine 里也会再确保一次。）
         IDEMode.resolveKotlinRuntime(offline = true)
@@ -51,7 +54,14 @@ class ScriptAgentStartup : ProjectActivity {
         SAModuleLibraries.install(project)
     }
 
-    private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {
+    private fun findMetadata(root: File, info: ScriptInfo): SACompiledScript? = try {
+        findMetadataFromIndex(root, info)
+    } catch (e: IndexNotReadyException) {
+        // 索引未就绪（dumb 模式）：返回 null；.metadata 已弃用，不做磁盘回退，由 core 报 Try regenerate
+        null
+    }
+
+    private fun findMetadataFromIndex(root: File, info: ScriptInfo): SACompiledScript? = runReadActionBlocking {
         val project = LocalFileSystem.getInstance().findFileByIoFile(root)?.let { vRoot ->
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 !project.isDisposed && ProjectFileIndex.getInstance(project).isInContent(vRoot)
@@ -67,6 +77,25 @@ class ScriptAgentStartup : ProjectActivity {
             fqName = deriveScriptFqName(info.id).let { (pkg, name) -> "$pkg.$name" }
         }
     }
+}
+
+/**
+ * 是否脚本工程：工程根有 scripts 目录、或 .SARoot、或 SARoot 环境变量指向工程内。
+ *
+ * Config.libraryDir / environments 是进程级全局（core 没有 project 概念），所以只允许脚本工程去写。
+ */
+private fun Project.isScriptAgentScriptsProject(): Boolean {
+    val base = basePath?.let(::File) ?: return false
+    System.getenv("SARoot")?.let { root ->
+        val basePath = base.absoluteFile.path + File.separator
+        return File(root).absoluteFile.path.startsWith(basePath)
+    }
+    return File(base, "scripts").isDirectory || File(base, ".SARoot").exists()
+}
+
+/** 把依赖解析目录指回本工程。 */
+private fun Project.claimScriptAgentConfig() {
+    basePath?.let { Config.libraryDir = File(it, "libs").toPath() }
 }
 
 fun deriveScriptFqName(scriptId: String): Pair<String, String> {

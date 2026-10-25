@@ -45,7 +45,7 @@
     </extensions>
     <extensions defaultExtensionNs="org.jetbrains.kotlin">
         <supportsKotlinPluginMode supportsK2="true"/>
-        <scriptDefinitionsProvider implementation="cf.wayzer.scriptagent.ideaplugin.SAScriptProvider"/>
+        <scriptDefinitionsProvider implementation="cf.wayzer.scriptagent.ideaplugin.SAScriptProvider" order="first"/>
         <scriptAdditionalIdeaDependenciesProvider
                 implementation="cf.wayzer.scriptagent.ideaplugin.SAScriptDependenciesProvider"/>
         <fir.extensions.firExtensionRegistrar implementation="cf.wayzer.scriptAgent.impl.loader.kcp.MyFirRegistrar"/>

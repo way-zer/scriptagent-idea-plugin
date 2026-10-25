@@ -11,11 +11,9 @@ import cf.wayzer.scriptAgent.util.DependencyManager
 import cf.wayzer.scriptAgent.util.maven.Dependency
 import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
-import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
-import com.intellij.openapi.application.readAction
+import cf.wayzer.scriptagent.ideaplugin.index.withIndexInSmartMode
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
-import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.ActionCallback
@@ -67,8 +65,6 @@ class MavenLibraryService(
         }
         scope.launch {
             try {
-                // Sync 可能在工程索引期间被触发：索引查询只允许在 smart 模式执行，先等索引结束。
-                DumbService.getInstance(project).awaitSmartMode()
                 val (errors, visited) = withBackgroundProgress(project, "Downloading Script Dependencies") {
                     val errors = mutableListOf<String>()
                     val visited = mutableSetOf<String>()
@@ -134,9 +130,9 @@ class MavenLibraryService(
         errors: MutableList<String>,
     ) {
         if (!visited.add(scriptId)) return
-        val (info, depends) = readAction {
-            val file = SAIndexerService.findScript(project, scriptId) ?: return@readAction null
-            val info = SAIndexerService.getInfo(project, file) ?: return@readAction null
+        val (info, depends) = project.withIndexInSmartMode {
+            val file = SAIndexerService.findScript(project, scriptId) ?: return@withIndexInSmartMode null
+            val info = SAIndexerService.getInfo(project, file) ?: return@withIndexInSmartMode null
             info to SAIndexerService.getDepends(project, file)
         } ?: return
 

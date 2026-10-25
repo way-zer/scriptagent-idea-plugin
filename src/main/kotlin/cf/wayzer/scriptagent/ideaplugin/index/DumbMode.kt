@@ -1,34 +1,22 @@
 package cf.wayzer.scriptagent.ideaplugin.index
 
-import com.intellij.openapi.project.DumbService
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.project.Project
+import java.util.concurrent.Callable
+
+private class BlockCallable<T>(private val block: () -> T) : Callable<T> {
+    override fun call(): T = block()
+}
 
 /**
- * 挂起直到工程退出 dumb 模式（索引完成）。
+ * 在 smart 模式下执行索引查询 —— 用平台官方原语：
+ * ReadAction.nonBlocking(...).inSmartMode(project).executeSynchronously()。
  *
- * [SAIndexerService] 的查询都走 [com.intellij.util.indexing.FileBasedIndex]，只能在 smart 模式执行；
- * dumb 模式下调用会抛 [com.intellij.openapi.project.IndexNotReadyException]。用户操作（Sync、工具窗按钮）
- * 可能正好落在索引期间 —— 这些入口先 await，而不是把"还在索引"当成失败。
+ * 语义：排队直到工程处于 smart 模式再执行读操作；期间（包括排队时又进入 dumb 模式）平台会等待/重排，
+ * 不会抛 IndexNotReadyException。之前自己用 DUMB_MODE 消息总线等 + 失败重试，属于重复实现平台能力。
  *
- * **不要在读操作里调用**：smart 模式需要写锁才能结束。
+ * 约束（平台规定）：不能在 EDT（UI 线程）执行，也不能在已有读操作里执行；
+ * 本插件所有调用点都在后台协程（project scope / Dispatchers.Default）里。
  */
-suspend fun DumbService.awaitSmartMode() {
-    while (isDumb && !project.isDisposed) {
-        suspendCancellableCoroutine { cont ->
-            val connection = project.messageBus.connect()
-            connection.subscribe(DumbService.DUMB_MODE, object : DumbService.DumbModeListener {
-                override fun exitDumbMode() {
-                    connection.disconnect()
-                    if (cont.isActive) cont.resume(Unit)
-                }
-            })
-            cont.invokeOnCancellation { connection.disconnect() }
-            // 订阅后再确认一次：否则"检查完 isDumb、订阅前刚好退出"会漏掉事件而永久挂起。
-            if (!isDumb && cont.isActive) {
-                connection.disconnect()
-                cont.resume(Unit)
-            }
-        }
-    }
-}
+fun <T> Project.withIndexInSmartMode(block: () -> T): T =
+    ReadAction.nonBlocking(BlockCallable(block)).inSmartMode(this).executeSynchronously()

@@ -2,7 +2,7 @@ package cf.wayzer.scriptagent.ideaplugin.maven
 
 import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
-import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
+import cf.wayzer.scriptagent.ideaplugin.index.withIndexInSmartMode
 import cf.wayzer.scriptagent.ideaplugin.index.resolveRootAndId
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.icons.AllIcons
@@ -12,7 +12,6 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.readAction
 import com.intellij.openapi.project.DumbService
 import org.jetbrains.kotlin.idea.core.script.k2.ReloadScriptConfigurationService
 import org.jetbrains.kotlin.idea.core.util.toPsiFile
@@ -64,23 +63,19 @@ class DownloadDepsAction : AnAction(
                 .notify(project)
 
             if (success) {
-                // 下载期间工程可能又开始索引：后续的依赖查询同样要求 smart 模式。
-                DumbService.getInstance(project).awaitSmartMode()
                 // Generate stubs first, then reload: the new configuration must be analyzed against
                 // up-to-date stubs (previously fire-and-forget, racing the reload).
                 val stubService = StubCacheService.getInstance(project)
                 stubService.refreshAndAwait(scriptId)
-                for (dep in readAction { SAIndexerService.getDepends(project, file) }) {
+                for (dep in project.withIndexInSmartMode { SAIndexerService.getDepends(project, file) }) {
                     if (!dep.soft) stubService.refreshAndAwait(dep.name)
                 }
 
                 // New jars may have arrived: refresh the companion module library.
                 SAModuleLibraries.install(project)
 
-                // 改工程模型可能触发重新索引：最后这段同样查索引，再等一次。
-                DumbService.getInstance(project).awaitSmartMode()
-                // PSI/index access from the download coroutine (Dispatchers.Default) needs a read action.
-                readAction {
+                // 改工程模型可能触发重新索引：这段同样查索引，交给 helper 处理 smart 与重试。
+                project.withIndexInSmartMode {
                     val ktFile = file.toPsiFile(project) as? KtFile
                     if (ktFile != null) {
                         ReloadScriptConfigurationService.getInstance(project).reloadScriptData(ktFile)

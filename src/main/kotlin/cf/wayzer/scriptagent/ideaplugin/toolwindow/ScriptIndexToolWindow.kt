@@ -1,10 +1,9 @@
 package cf.wayzer.scriptagent.ideaplugin.toolwindow
 
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
-import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
+import cf.wayzer.scriptagent.ideaplugin.index.withIndexInSmartMode
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.EDT
-import com.intellij.openapi.application.readAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -58,15 +57,14 @@ private class ScriptIndexPanel(
     }
 
     private suspend fun showCurrentFileStub() {
-        DumbService.getInstance(project).awaitSmartMode()
-        val text = readAction {
+        val text = project.withIndexInSmartMode {
             val editor = FileEditorManager.getInstance(project).selectedEditor
-            val vFile = editor?.file ?: return@readAction "No file open"
-            if (vFile.extension != "kts") return@readAction "Not a .kts file: ${vFile.name}"
+            val vFile = editor?.file ?: return@withIndexInSmartMode "No file open"
+            if (vFile.extension != "kts") return@withIndexInSmartMode "Not a .kts file: ${vFile.name}"
 
             // Find the script ID for the current file
             val info = SAIndexerService.getInfo(project, vFile)
-                ?: return@readAction "Not indexed: ${vFile.name}"
+                ?: return@withIndexInSmartMode "Not indexed: ${vFile.name}"
             val scriptId = info.id
 
             // Refresh the stub via Analysis API
@@ -74,7 +72,7 @@ private class ScriptIndexPanel(
             cacheService.refreshSync(scriptId)
 
             val exports = cacheService.getCached(scriptId)
-            if (exports.isNullOrEmpty()) return@readAction "No @Export members found in: ${vFile.name}"
+            if (exports.isNullOrEmpty()) return@withIndexInSmartMode "No @Export members found in: ${vFile.name}"
 
             val className = vFile.nameWithoutExtension.replaceFirstChar { it.uppercaseChar() }
             buildString {
@@ -95,8 +93,7 @@ private class ScriptIndexPanel(
     }
 
     private suspend fun refresh() {
-        DumbService.getInstance(project).awaitSmartMode()
-        val text = readAction {
+        val text = project.withIndexInSmartMode {
             val sb = StringBuilder()
             val allKeys = SAIndexerService.getAllIds(project)
 

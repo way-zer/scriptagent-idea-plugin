@@ -48,6 +48,25 @@ object SAIndexerService {
         return (info.depends + DependsData(module, "module")).distinctBy { it.name }
     }
 
+    /**
+     * 传递依赖：BFS 所有非 soft @Depends（[getDepends] 已包含隐式「最近 module」依赖）。
+     * 返回遍历到的全部脚本 id（含自身）。
+     */
+    fun getAllDepends(project: Project, file: VirtualFile): List<String> {
+        val result = LinkedHashSet<String>()
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<String>()
+        resolveRootAndId(file)?.second?.let { queue += it }
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            if (!visited.add(id)) continue
+            val vFile = findScript(project, id) ?: continue
+            result += id
+            getDepends(project, vFile).asSequence().filter { !it.soft }.forEach { queue += it.name }
+        }
+        return result.toList()
+    }
+
     fun findScript(project: Project, id: String): VirtualFile? {
         return FileBasedIndex.getInstance()
             .getContainingFiles(index, id, GlobalSearchScope.projectScope(project))
