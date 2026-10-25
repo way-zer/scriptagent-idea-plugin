@@ -11,9 +11,12 @@ import cf.wayzer.scriptAgent.util.DependencyManager
 import cf.wayzer.scriptAgent.util.maven.Dependency
 import cf.wayzer.scriptagent.ideaplugin.companion.SAModuleLibraries
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
+import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.ActionCallback
 import com.intellij.platform.ide.progress.withBackgroundProgress
@@ -64,6 +67,8 @@ class MavenLibraryService(
         }
         scope.launch {
             try {
+                // Sync 可能在工程索引期间被触发：索引查询只允许在 smart 模式执行，先等索引结束。
+                DumbService.getInstance(project).awaitSmartMode()
                 val (errors, visited) = withBackgroundProgress(project, "Downloading Script Dependencies") {
                     val errors = mutableListOf<String>()
                     val visited = mutableSetOf<String>()
@@ -84,6 +89,9 @@ class MavenLibraryService(
                     "Resolved with ${errors.size} errors:\n${errors.joinToString("\n")}"
                 }
                 onComplete(errors.isEmpty(), message)
+            } catch (e: IndexNotReadyException) {
+                // 兜底：下载途中工程又进入 dumb 模式（文件变更触发重建索引）。这不是下载失败。
+                onComplete(false, "Indexing in progress, please retry Sync after it finishes")
             } catch (e: Exception) {
                 onComplete(false, "Download failed: ${e.message}")
             } finally {

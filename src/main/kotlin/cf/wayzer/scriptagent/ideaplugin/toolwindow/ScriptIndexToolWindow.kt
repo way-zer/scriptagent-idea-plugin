@@ -1,6 +1,7 @@
 package cf.wayzer.scriptagent.ideaplugin.toolwindow
 
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
+import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
 import cf.wayzer.scriptagent.ideaplugin.stub.StubCacheService
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
@@ -57,6 +58,7 @@ private class ScriptIndexPanel(
     }
 
     private suspend fun showCurrentFileStub() {
+        DumbService.getInstance(project).awaitSmartMode()
         val text = readAction {
             val editor = FileEditorManager.getInstance(project).selectedEditor
             val vFile = editor?.file ?: return@readAction "No file open"
@@ -93,6 +95,7 @@ private class ScriptIndexPanel(
     }
 
     private suspend fun refresh() {
+        DumbService.getInstance(project).awaitSmartMode()
         val text = readAction {
             val sb = StringBuilder()
             val allKeys = SAIndexerService.getAllIds(project)

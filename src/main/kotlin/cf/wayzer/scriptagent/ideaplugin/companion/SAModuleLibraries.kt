@@ -8,12 +8,14 @@ import cf.wayzer.scriptAgent.impl.ManagerImpl
 import cf.wayzer.scriptAgent.impl.SACompiledScript
 import cf.wayzer.scriptAgent.impl.config.IDEMode
 import cf.wayzer.scriptagent.ideaplugin.index.SAIndexerService
+import cf.wayzer.scriptagent.ideaplugin.index.awaitSmartMode
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.ModuleManager
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
@@ -39,6 +41,9 @@ object SAModuleLibraries {
     private data class ModuleLib(val id: String, val contentDir: VirtualFile, val libUrl: String)
 
     suspend fun install(project: Project) {
+        if (project.isDisposed) return
+        // getAllIds/findScript/getInfo 都在查索引：工程刚打开时可能还在索引，先等 smart 模式。
+        DumbService.getInstance(project).awaitSmartMode()
         if (project.isDisposed) return
         val moduleLibs = readAction {
             SAIndexerService.getAllIds(project).mapNotNull { id ->
