@@ -27,15 +27,16 @@ import kotlin.script.experimental.jvm.JvmDependency
 
 /**
  * Phase 5：让 companion `.kt` 在 IDE 里有正确的 classpath。范围见 IMPLEMENTATION §10.2（只处理 lib/）。
- * 每个 `module.kts`/`lib` 目录一个 IntelliJ Module：content root = SA 模块目录，source root = `lib`；
- * library 的 CLASSES = module.kts 的依赖 + 框架 classpath，SOURCES = 其中已下载的 sources（见 §10.3）。
+ * 每个 `module.kts` 一个 IntelliJ Module：content root = module.kts 所在目录，`lib` 始终配置为 source root
+ * （按 URL 配置，不要求目录存在、也不创建）。library 的 CLASSES = module.kts 的依赖 + 框架 classpath，
+ * SOURCES = 其中已下载的 sources（见 §10.3）。
  */
 object SAModuleLibraries {
     private val LOG = Logger.getInstance(SAModuleLibraries::class.java)
     private const val LIBRARY_NAME = "SA Scripts Libraries"
     private const val JAVA_MODULE_TYPE = "JAVA_MODULE"
 
-    private data class ModuleLib(val id: String, val contentDir: VirtualFile, val sourceDir: VirtualFile)
+    private data class ModuleLib(val id: String, val contentDir: VirtualFile, val libUrl: String)
 
     suspend fun install(project: Project) {
         if (project.isDisposed) return
@@ -44,9 +45,7 @@ object SAModuleLibraries {
                 val file = SAIndexerService.findScript(project, id) ?: return@mapNotNull null
                 if (file.nameWithoutExtension != "module") return@mapNotNull null
                 val contentDir = file.parent ?: return@mapNotNull null
-                val lib = contentDir.findChild("lib") ?: return@mapNotNull null
-                if (!lib.isDirectory || !containsKotlin(lib)) return@mapNotNull null
-                ModuleLib(id, contentDir, lib)
+                ModuleLib(id, contentDir, contentDir.url + "/lib")
             }
         }
         if (moduleLibs.isEmpty()) return
@@ -55,7 +54,7 @@ object SAModuleLibraries {
             val classpath = (scriptLibraries(project, entry.id).mapNotNull(::toVirtualFile) + framework).distinct()
             // sources 只挂已经落盘的；缺失的由横幅的 "Download sources" 按需补。
             ensureModule(
-                project, "SA-" + entry.id.replace('/', '-'), entry.contentDir, entry.sourceDir,
+                project, "SA-" + entry.id.replace('/', '-'), entry.contentDir, entry.libUrl,
                 classpath, classpath.mapNotNull(::sourcesJarOf)
             )
         }
@@ -85,7 +84,7 @@ object SAModuleLibraries {
         project: Project,
         name: String,
         contentDir: VirtualFile,
-        sourceDir: VirtualFile,
+        libUrl: String,
         classes: List<VirtualFile>,
         sources: List<VirtualFile>,
     ) {
@@ -103,8 +102,8 @@ object SAModuleLibraries {
                 val rootModel = ModuleRootManager.getInstance(module).modifiableModel
                 val content = rootModel.contentEntries.firstOrNull { it.url == contentDir.url }
                     ?: rootModel.addContentEntry(contentDir)
-                if (content.sourceFolders.none { it.file == sourceDir }) {
-                    content.addSourceFolder(sourceDir, false)
+                if (content.sourceFolders.none { it.url == libUrl }) {
+                    content.addSourceFolder(libUrl, false)
                 }
                 val table = rootModel.moduleLibraryTable
                 val library = table.getLibraryByName(LIBRARY_NAME) ?: table.createLibrary(LIBRARY_NAME)
@@ -136,17 +135,6 @@ object SAModuleLibraries {
      */
     private fun libraryRootUrl(file: VirtualFile): String =
         if (file.isDirectory) file.url else "jar://" + file.path + "!/"
-
-    private fun containsKotlin(dir: VirtualFile): Boolean {
-        for (child in dir.children) {
-            if (child.isDirectory) {
-                if (containsKotlin(child)) return true
-            } else if (child.extension == "kt") {
-                return true
-            }
-        }
-        return false
-    }
 
     private fun toVirtualFile(file: File): VirtualFile? =
         LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)

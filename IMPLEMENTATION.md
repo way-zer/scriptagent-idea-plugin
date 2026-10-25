@@ -132,6 +132,7 @@ src/main/kotlin/cf/wayzer/scriptagent/ideaplugin/
 - 成员签名通过 `StubCacheService` 使用 Analysis API `KaDeclarationRendererForSource.WITH_QUALIFIED_NAMES` 渲染，无 body/initializer，加 `abstract` 前缀
 - Stub 缓存需手动刷新（gutter icon 触发 `refreshAsync`）
 - 注意：`SAResolveExtension` 从当前脚本的 PSI 直接提取 inject 依赖（`PsiAnnotationExtractor.extractDepends`），不经过 FileBasedIndex
+- Stub 用 `abstract class` 而非 `interface`：inject 构造参数在运行时实际传的是**依赖脚本实例**（`ManagerImpl.instantiate` 反射 `newInstance`），而脚本类的 supertypes 完全由 `ScriptCompilationConfiguration.baseClass` 决定，源码里无法声明 `implements`（只能靠编译器插件在 IR 阶段加，见 §9）。所以 `abstract class` 是唯一与“运行时对象类型”相符的建模；`interface` 要等 Phase 7 第 3 步真正生成 interface 并挂进脚本类 superTypes 之后才合法
 
 ### 4.4 SAScriptDependenciesProvider：当前为空实现
 
@@ -244,9 +245,10 @@ Value: ScriptIndexInfo
 - 入口：编辑器浮窗 "Sync Script Dependencies" 按钮（`DownloadDepsAction` + `DepsFloatingToolbarProvider`）
 - `ScriptAgentStartup.execute` 直接设置 `Config.libraryDir = <projectRoot>/libs`；`Config.rootDir` 故意不设，IDE 一旦用到会立刻抛错暴露依赖
 
-### Phase 5：companionSources kt 模块支持 — ✅ 部分完成（只做 `module.kts` 的 `lib/`）
+### Phase 5：companionSources kt 模块支持 — ✅ 完成（module 级）
 
-- `lib/` 下的 `.kt` 由专用 IntelliJ Module 提供 classpath + SOURCES（见 §10.2 / §10.3）
+- 每个 `module.kts` 一个 IntelliJ Module：content root = 所在目录，`lib` 始终配置为 source root（不要求目录存在，见 §10.2）
+- 模块级 Library 提供宿主脚本 classpath + SOURCES（见 §10.2 / §10.3）
 - 同目录 sibling `<base>.<xxx>.kt` 不做（见 §10.2 的决策）
 
 ### Phase 6：高级特性 — 待实现
@@ -313,7 +315,8 @@ ScriptClassLoader(B): 引用 interface 类型 → 通过 parentClassloaders(A) �
 instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtual dispatch ✓
 ```
 
-- `ManagerImpl.instantiate()` 逻辑不变：仍然传入 `Script` 实例，但构造函数参数类型为 interface，JVM 类型兼容
+- `ManagerImpl.instantiate()` 逻辑不变：仍然传入 `Script` 实例，构造函数参数类型为 interface，脚本类 implements 后被 interface 类型接受
+- 反向约束：构造函数参数类型取自 `providedProperties`，反射构造不会自动放宽匹配 —— 对象若未 implements 该 interface，`newInstance` 直接 `IllegalArgumentException`。所以第 3 步的“加 superTypes”不是可选装饰，是 providedProperties 改指 interface 的前提
 
 ### 9.0.4 ABI Hash 与缓存失效
 
@@ -400,7 +403,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 - 结论：**插件层无法给普通 `.kt` 注入自定义 `KaModule`**；只有 Kotlin 插件自带的脚本工厂能造出 `KaScriptModuleImpl`/`KaSourceModuleBase` 这些被内部硬转换依赖的具体类。
 
 **已实现：工程模型建 IntelliJ Module（Phase 5 选项 b）**
-- 实现（`companion/SAModuleLibraries`）：扫描 `module.kts` 同目录 `lib/`（含 `.kt`），用 `ModuleManager.getModifiableModel().newModule(<project>/.idea/SA-<id>.iml, "JAVA_MODULE")` 建模块，content root = SA 模块目录、source root = `lib`，模块级 Library 挂宿主脚本的 Maven/`libraryByClass` 依赖 + 框架 classes，再 `inheritSdk()`。
+- 实现（`companion/SAModuleLibraries`）：扫描**所有** `module.kts`（不要求 `lib` 存在或含 `.kt`），用 `ModuleManager.getModifiableModel().newModule(<project>/.idea/SA-<id>.iml, "JAVA_MODULE")` 建模块；content root = module.kts 所在目录，`lib` **始终**配置为 source root（按 URL 配置，不要求目录存在、也不创建）。模块级 Library 挂宿主脚本的 Maven/`libraryByClass` 依赖 + 框架 classes，再 `inheritSdk()`。
 - **时机是关键**：平台在工程打开后会异步把 JPS 模型同步进 workspace model（`JpsProjectModelSynchronizer - Attempt 1: Apply JPS storage (iml files)` → `ProjectSynchronizerUtilImpl.applyJpsModelToProjectModel`）。这次同步以 JPS storage（`.iml` + `.idea/modules.xml`）为准，**早于它的工程模型改动会被整轮覆盖**——现象就是模块「出现一下又消失」（连续 3 个 session 都在 attach 后 ~5s 被清掉）。
 - 因此 `ScriptAgentStartup`（`postStartupActivity`）先 `(WorkspaceModel.getInstance(project) as WorkspaceModelInternal).awaitSynchronizationWithJpsModel()` 等同步完成，再 `SAModuleLibraries.install()`。这个等待只是协程挂起，不阻塞任何东西：平台的 `postStartupActivity` `ProjectActivity` 是 `launch` 出去的（`StartupManagerImpl` 只把 Job 记进 `runningProjectActivities`，从不 join），`allActivitiesPassed` 在所有活动**派发完毕**时就 complete。`JpsProjectLoadingManager.jpsProjectLoaded` 已废弃（废弃信息指向的就是上面这个 API），勿用。
 - 佐证：`testProject/.idea/modules.xml` 曾被平台改写（git diff 只少一个行尾换行）却没有 `SA-coreLibrary` 条目；磁盘上不存在 `SA-coreLibrary.iml`。
@@ -455,7 +458,7 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
       - 顺带修掉一个更隐蔽的问题：`ScriptAgentStartup` 注册过 global 之后，refine / companion install 再调 `resolveKotlinRuntime(offline = true)` 本来**恒返回空**（三个坐标全被 skip），于是 `refineFrameworkClasspath()` 与 companion 的 framework classpath 实际什么都没加，Kotlin 只能靠宿主 classpath 兜底。现在两条路径都真的拿到 `<libs>` 里的 runtime 文件。
 - [x] library `SOURCES` 对接 —— 见 §10.3
 - [x] 验证去掉 Kotlin facet 后 companion 仍正常（需先删掉带 facet 的旧 `SA-*.iml`）
-- [x] 决定 sibling companion 走哪条路：**保持现状（c）**。根因是 classpath 粒度（IntelliJ 只能按目录归属），没有低成本的好办法；代价是同目录 `<base>.<xxx>.kt` 里 classpath 相关引用会红。
+- [x] 决定 companion 的模块策略：**只给 `module.kts` 建模块**——module.kts 所在目录为 content root，`lib` 始终作为 source root（即使目录不存在，只写工程模型）。同目录 `<base>.<xxx>.kt` 不为它单独建模块，仍无 classpath（classpath 粒度限制，只按目录归属）。
 
 ### 10.3 library SOURCES 对接 — ✅ 已实现
 
