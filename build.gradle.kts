@@ -8,7 +8,7 @@ plugins {
 group = "cf.wayzer.scriptAgent"
 
 // 公测 alpha 版本号：Marketplace 要求语义化版本，可用 -PpluginVersion=... 覆盖
-version = providers.gradleProperty("pluginVersion").getOrElse("0.1.0-alpha.2")
+version = providers.gradleProperty("pluginVersion").getOrElse("0.1.0-alpha.3")
 
 // 本地开发默认用已安装的 IDE（快）；发布/CI 加 -PuseLocalIde=false 走远程下载的 2026.2，确保可复现
 val useLocalIde = providers.gradleProperty("useLocalIde").orNull?.toBoolean() ?: true
@@ -59,15 +59,17 @@ intellijPlatform {
         )
         changeNotes.set(
             """
-            Alpha public beta (0.1.0-alpha.2)
+            Alpha public beta (0.1.0-alpha.3)
+            - Fixed Marketplace plugin verification: the bundled KCP compiler plugin now registers extensions
+              reflectively, compatible with both Kotlin 2.3 and 2.4 (no more "Method not found").
+            - Removed IntelliJ internal API usage (WorkspaceModelInternal); module installation now relies on
+              the regular smart-mode index wait instead.
             - Scripts are analyzed as part of the SA module tree: @Depends/@Import navigation, exported-member
               stub navigation, and companion module source visibility.
-            - Fixed duplicated script definition loading (a second Config instance broke dependency resolution).
-            - Index queries run in smart mode; fixed Invalid PSI errors after PSI rebuilds.
-            - Distribution now ships the MIT license, third-party notices, and the plugin icon.
-            中文：脚本按 SA 模块树参与分析（@Depends/@Import 跳转、导出成员 stub 导航、模块源码可见）；
-            修复脚本定义被加载两次导致的依赖解析失效；索引查询统一走 smart 模式并修复 PSI 重建后异常；
-            分发包补充 MIT 许可、第三方声明与插件图标。
+            - Fixed duplicated script definition loading; fixed Invalid PSI errors after PSI rebuilds.
+            中文：修复插件校验（KCP 编译器插件改为反射注册扩展，Kotlin 2.3/2.4 均兼容，消除 Method not found）；
+            移除 IntelliJ 内部 API（WorkspaceModelInternal）；脚本按 SA 模块树参与分析（跳转/导航/源码可见）；
+            修复脚本定义重复加载与 PSI 重建后的异常。
             """.trimIndent()
         )
         vendor {

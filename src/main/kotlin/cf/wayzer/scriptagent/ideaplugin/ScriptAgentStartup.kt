@@ -16,8 +16,6 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.platform.backend.workspace.WorkspaceModel
-import com.intellij.platform.backend.workspace.impl.WorkspaceModelInternal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jetbrains.kotlin.name.NameUtils
@@ -45,12 +43,14 @@ class ScriptAgentStartup : ProjectActivity {
     }
 
     /**
-     * 给 companion .kt 建专用 IntelliJ Module。平台在工程打开后会异步做一次 JPS→workspace 同步
-     * （日志 "Apply JPS storage (iml files)"），早于它的工程模型改动会被整轮覆盖（模块「出现一下
-     * 又消失」），必须先等同步完成；Dispatchers.Default 保证恢复时不落在同步所在的线程/事务里。
+     * 给 companion .kt 建专用 IntelliJ Module。
+     *
+     * 平台在工程打开后会异步把 JPS 模型同步进 workspace model（早于索引），同步早于它的模型改动
+     * 会被整轮覆盖。这里不再用内部 API 等同步：SAModuleLibraries.install 的第一个索引查询会等
+     * smart 模式（那时同步早已完成），足以避开这个窗口。Dispatchers.Default 保证恢复时不落在
+     * 同步所在的线程/事务里。
      */
     private suspend fun installCompanionModules(project: Project) = withContext(Dispatchers.Default) {
-        (WorkspaceModel.getInstance(project) as WorkspaceModelInternal).awaitSynchronizationWithJpsModel()
         SAModuleLibraries.install(project)
     }
 
