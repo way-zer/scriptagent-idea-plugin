@@ -48,3 +48,9 @@ https://plugins.jetbrains.com/plugins/alpha/<numeric-plugin-id> or install the z
 | PUBLISH_TOKEN | Marketplace upload token |
 
 CI runs with CI=true (disables the composite local core checkout) and must pass -PsaVersion.
+
+## License
+
+Plugin sources are released under the MIT License (see LICENSE).
+The distribution bundles third-party libraries; their licenses are listed in THIRD-PARTY-NOTICES.md.
+The ScriptAgent core library is a separate, private component and is bundled with permission.

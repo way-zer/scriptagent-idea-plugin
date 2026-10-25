@@ -2,6 +2,7 @@
     <id>cf.wayzer.scriptAgent.ideaPlugin</id>
     <name>ScriptAgent</name>
     <vendor email="himc.wicp@gmail.com">WayZer</vendor>
+    <icon width="40" height="40" path="/META-INF/pluginIcon.svg"/>
 
     <description><![CDATA[
      Idea Plugin for ScriptAgent scripting support.
