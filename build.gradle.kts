@@ -8,7 +8,7 @@ plugins {
 group = "cf.wayzer.scriptAgent"
 
 // 公测 alpha 版本号：Marketplace 要求语义化版本，可用 -PpluginVersion=... 覆盖
-version = providers.gradleProperty("pluginVersion").getOrElse("0.1.0-alpha.1")
+version = providers.gradleProperty("pluginVersion").getOrElse("0.1.0-alpha.2")
 
 // 本地开发默认用已安装的 IDE（快）；发布/CI 加 -PuseLocalIde=false 走远程下载的 2026.2，确保可复现
 val useLocalIde = providers.gradleProperty("useLocalIde").orNull?.toBoolean() ?: true
@@ -59,10 +59,15 @@ intellijPlatform {
         )
         changeNotes.set(
             """
-            Alpha public beta: scripts now link to their SA module tree for source visibility; fixed duplicated
-            script definition loading (second Config broke dependency resolution); index queries run in smart mode;
-            fixed Invalid PSI errors after PSI rebuilds.
-            中文：脚本分析按 SA 模块树关联模块；修复脚本定义被加载两次；索引查询统一走 smart 模式；修复 PSI 重建后的异常。
+            Alpha public beta (0.1.0-alpha.2)
+            - Scripts are analyzed as part of the SA module tree: @Depends/@Import navigation, exported-member
+              stub navigation, and companion module source visibility.
+            - Fixed duplicated script definition loading (a second Config instance broke dependency resolution).
+            - Index queries run in smart mode; fixed Invalid PSI errors after PSI rebuilds.
+            - Distribution now ships the MIT license, third-party notices, and the plugin icon.
+            中文：脚本按 SA 模块树参与分析（@Depends/@Import 跳转、导出成员 stub 导航、模块源码可见）；
+            修复脚本定义被加载两次导致的依赖解析失效；索引查询统一走 smart 模式并修复 PSI 重建后异常；
+            分发包补充 MIT 许可、第三方声明与插件图标。
             """.trimIndent()
         )
         vendor {
