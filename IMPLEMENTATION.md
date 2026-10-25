@@ -19,6 +19,7 @@
 @file:Import("com.guava:guava:30.1", mavenDepends = true)  // Maven 依赖
 @file:Import("arc.Core", libraryByClass = true)            // 按类名反查 JAR
 @file:Import("wayzer.lib.*", defaultImport = true)         // 默认 import
+@file:Import("com.github.TinyLake.MindustryX:core:v1.0", mavenDepends = true, env = "!mindustry")  // 条件依赖，见 §10.4
 ```
 
 `@Import` 类型标志（互斥，只能设一个为 true）：
@@ -32,6 +33,8 @@
 - `mavenRepository` — Maven 仓库地址
 - `defaultImport` — 自动 import 的包/类
 - `compileArg` — 编译参数
+
+`env` 是**修饰符**（不是类型选择器），语义见 `Import.env` 的 KDoc，设计见 §10.4。
 
 ### IntelliJ 中 .kts 的特殊地位
 
@@ -473,6 +476,27 @@ instantiate(B): 传入 A 实例（已 implements interface），JVM 直接 virtu
 - **未覆盖 / TODO**：
       - `.kts` 自己的 classpath 走 `ScriptCompilationConfiguration`，没有 sources 通道；但它的依赖 jar 同时是 companion library 的 root，所以在 `.kts` 里 Ctrl+Click 到这些类时横幅**可能**同样出现（待 runIde 验证）。
       - 待 runIde 验证：module 级 library 能否被 `findLibraryEntitiesForFile` 命中（Maven 也是 module/project 级，大概率可以）。
+
+### 10.4 条件 import（env）— ✅ 已实现（core + 插件；ext 仓库迁移待做）
+
+**问题**：同一份声明在不同运行期语义不同。平台依赖（如 MindustryX core）：IDE / precompile 必须能从 maven 下载才能编译，真 host 里类由宿主 ClassLoader 提供、不该下载。反过来 `libraryByClass` 这种"从宿主 classLoader 反查 jar"的声明只在 host 有意义，在 IDE 里只会报 "Fail import LibraryByClass"。
+
+**方案**：给 `@Import` 加修饰符 `env`，由**声明处**决定生效环境；引擎只按当前环境过滤，不引入 compile-only / provided 之类的解析语义。
+
+- 环境集合：`Config.environments: MutableSet<String>`，各入口在启动早期填（插件填 `ide`；ext 预编译入口填 `precompile`；宿主 loader 填平台名如 `mindustry`）。core 不读系统属性。
+- 匹配规则：以 `Import.env` 的 KDoc 为唯一来源（实现 `ImportData.isActive`）。IDE 侧只做语法校验，**不做白名单校验**——其它环境的 token 本进程不知道。
+- 过滤时机：`ImportData` **全量**进 metadata（不按环境裁剪，`.ktc` 缓存跨环境共享），在**使用**时过滤：`ManagerImpl.importToLibraries`、`SAConfiguration.refineForImportSources`、`refineForDeps` / `refineForDepsIDEMode` 里的 defaultImport + compileArg 收集。
+- 缓存格式：都在 `IMPORT` 段。无条件项保持旧格式 `Type value`；有条件项前置标记 `env=xxx Type value`（以 `env=` 开头即判定有条件，value 里的空格不受影响）。只保证新版本能读旧数据，不保证反向。
+- 传播：子脚本拿到的是依赖脚本**解析后**的 `libraries`，每个环境自动得到自己那份，继承逻辑里无需再判断。
+
+**ext 仓库迁移（待做）**：
+- `coreMindustry/module.kts`：平台 maven 依赖加 `env = "!mindustry"`；`libraryByClass` 那两条加 `env = "mindustry"`
+- 预编译入口：`Config.environments += "precompile"`
+- 宿主 loader：`Config.environments += "mindustry"`
+- 之后可删 `bootStrap/generate.kts` 里手工下载 + 灌 `Config.mainClassloader` 的那段
+- ext 的 `buildSrc/ModuleParser`（从 `.metadata` 生成 Gradle 模块依赖）要识别 `env=` 标记：条件依赖对应 Gradle 侧就是 `compileOnly`
+
+**未做**：`@Depends` 不支持 `env`（牵扯模块继承）；"host 编译 classpath 的真相"（宿主注入 `Config.platformClasspath`）可作为独立改进，届时 `env="mindustry"` 那几行可删。
 
 ## 十一、已知限制与 TODO
 

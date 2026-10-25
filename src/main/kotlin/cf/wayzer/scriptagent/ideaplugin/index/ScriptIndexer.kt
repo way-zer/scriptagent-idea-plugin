@@ -14,7 +14,7 @@ import java.io.DataOutput
 
 class ScriptIndexer : FileBasedIndexExtension<String, ScriptIndexInfo>() {
     override fun getName() = SAIndexerService.index
-    override fun getVersion(): Int = 9
+    override fun getVersion(): Int = 10
     override fun dependsOnFileContent(): Boolean = true
     override fun traceKeyHashToVirtualFileMapping(): Boolean = true
     override fun getInputFilter() = ScriptFileFilter

@@ -47,5 +47,22 @@ class ScriptAnnotationAnnotator : Annotator {
                 HighlightSeverity.WARNING, "多个导入类型被设为 true，只有一个生效"
             ).range(entry).create()
         }
+        checkImportEnv(entry, holder)
+    }
+
+    /**
+     * `env` 是环境表达式（`|` 分隔，`!` 取反），只做语法校验 —— 其它环境的 token 本进程不知道，
+     * 不能做白名单校验。能确定写错的只有 `!` 后面没写环境名这种。
+     */
+    private fun checkImportEnv(entry: KtAnnotationEntry, holder: AnnotationHolder) {
+        val envExpr = entry.valueArguments.firstOrNull {
+            it.getArgumentName()?.asName?.asString() == "env"
+        }?.getArgumentExpression() ?: return
+        val env = PsiAnnotationExtractor.stringValue(envExpr) ?: return
+        if (env.split('|').any { it.trim() == "!" }) {
+            holder.newAnnotation(
+                HighlightSeverity.WARNING, "env 中 '!' 后缺少环境名"
+            ).range(envExpr).create()
+        }
     }
 }

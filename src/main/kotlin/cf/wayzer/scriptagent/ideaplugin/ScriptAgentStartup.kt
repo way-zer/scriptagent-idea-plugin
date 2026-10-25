@@ -25,6 +25,8 @@ import java.io.File
 @OptIn(SAIDEModeApi::class)
 class ScriptAgentStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
+        // 条件 import：IDE 环境
+        Config.environments += "ide"
         // Fixed convention: the Maven library cache lives in <projectRoot>/libs (matches testProject).
         // libraryDir is the only framework global IDE analysis truly needs. Config.rootDir is
         // intentionally left unset so any incidental use fails loudly. Set libraryDir before the

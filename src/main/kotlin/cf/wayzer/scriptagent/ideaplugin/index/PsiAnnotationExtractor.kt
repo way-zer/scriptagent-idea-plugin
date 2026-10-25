@@ -61,7 +61,9 @@ object PsiAnnotationExtractor {
         ) ?: return null
 
         val type = activeImportFlags(entry).firstOrNull() ?: inferType(value)
-        return ImportData(type, value)
+        // env 是修饰符，不参与类型推断
+        val env = stringValue(args.find { argName(it) == "env" }?.getArgumentExpression()).orEmpty()
+        return ImportData(type, value, env)
     }
 
     /** Import type selectors that are explicitly set to `true` on this annotation. */
